@@ -1,0 +1,30 @@
+# Secretos
+.env
+**/.env
+!**/.env.example
+*.pem
+*.key
+
+# Datos y respaldos de bases de datos
+MysqlB/mysqlData/
+MysqlB/backup/
+MysqlB/logs/
+Postgres/postgreData/
+Postgres/backup/
+Postgres/logs/
+
+# Dependencias y builds
+**/vendor/
+**/node_modules/
+presentacion/dist/
+presentacion/.angular/
+presentacion/coverage/
+
+# Editor / herramientas
+.claude/settings.local.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Credenciales de PostgreSQL para scripts
+**/.pgpass

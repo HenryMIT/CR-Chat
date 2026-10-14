@@ -1,0 +1,55 @@
+services:
+
+  servermysql:
+    build:
+      context: ./MysqlB
+      dockerfile: Dockerfile
+    container_name: servermysql
+    environment:
+      - MYSQL_DATABASE=${DB_NAME:-CR_Chat}
+      - MYSQL_USER=${MYSQL_USER:-admin}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-***REMOVED***}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-***REMOVED***}
+    ports:
+      - 3306:3306
+    volumes:
+      - ./MysqlB/mysqlData:/var/lib/mysql
+      - ./MysqlB/mysql-init:/docker-entrypoint-initdb.d
+      - ./MysqlB/backup:/backup
+      - ./MysqlB/logs:/var/log/mysqlbackup
+
+  serverPG:
+    image: cr_chat_postgresql
+    container_name: serverPG
+    environment:
+      - POSTGRES_DB=${DB_NAME:-CR_Chat}
+      - POSTGRES_USER=${POSTGRES_USER:-admin}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-***REMOVED***}
+    build:
+      context: .
+      dockerfile: ./Postgres/Dockerfile
+    ports:
+      - 5432:5432
+    volumes:      
+      - ./Postgres/postgreData:/var/lib/postgresql/data
+      - ./Postgres/postgres-init:/docker-entrypoint-initdb.d
+      - ./Postgres/backup:/backup
+      - ./Postgres/logs:/var/log
+
+  web-datos:
+    container_name: servidor-datos
+    volumes:
+      - ./datos/src:/var/www/html/src
+      - ./datos/public:/var/www/html/public
+      - ./datos/.env:/var/www/html/.env:ro
+    build:
+      context: .
+      dockerfile: ./datos/Dockerfile
+    ports:
+      - 8000:80
+    depends_on:
+      - serverPG
+      - servermysql
+
+volumes:
+  postgres:
