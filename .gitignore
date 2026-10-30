@@ -16,9 +16,7 @@ Postgres/logs/
 # Dependencias y builds
 **/vendor/
 **/node_modules/
-presentacion/dist/
-presentacion/.angular/
-presentacion/coverage/
+**/dist/
 
 # Editor / herramientas
 .claude/settings.local.json
@@ -26,5 +24,7 @@ presentacion/coverage/
 .DS_Store
 Thumbs.db
 
-# Credenciales de PostgreSQL para scripts
+
+# Credenciales locales de clientes de BD
 **/.pgpass
+**/.my.cnf

@@ -1,29 +1,17 @@
 FROM postgres:17
 
-# Instalar cron y utilidades
-RUN apt-get update && \
-    apt-get install -y cron postgresql-client
-RUN apt-get update && apt-get install -y tzdata
+RUN apt-get update && apt-get install -y --no-install-recommends cron tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV TZ=America/Costa_Rica
 
-RUN apt-get update && \
-    apt-get install -y pgbackrest
-    
-RUN mkdir -p /backup /var/log/pgbackrest
-COPY Postgres/script/pgbackrest.conf /etc/pgbackrest.conf
+RUN mkdir -p /backup && touch /var/log/cron.log
 
-COPY Postgres/script/backup_full.sh /usr/local/bin/backup_full.sh
-COPY Postgres/script/backup_diff.sh /usr/local/bin/backup_diff.sh
-COPY Postgres/script/restore.sh /usr/local/bin/restore.sh
+COPY Postgres/script/backup.sh Postgres/script/restore.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/backup.sh /usr/local/bin/restore.sh
 
-RUN chmod +x /usr/local/bin/backup_full.sh /usr/local/bin/backup_diff.sh
+RUN echo "*/10 * * * * root bash /usr/local/bin/backup.sh >> /var/log/cron.log 2>&1" > /etc/cron.d/pg-backup \
+    && chmod 0644 /etc/cron.d/pg-backup
 
-RUN echo "/10 * * * * bash /usr/local/bin/backup_full.sh >> /var/log/cron.log 2>&1" > /etc/cron.d/backup_full       
-RUN chmod 0644 /etc/cron.d/backup_full
-
-RUN touch /var/log/cron.log
- 
-
-CMD service cron start && docker-entrypoint.sh postgres
-
-# RUN crontab /etc/cron.d/backup_full
+# cron no hereda el entorno del contenedor: se escriben las variables al arrancar
+CMD ["bash", "-c", "umask 077 && printf 'POSTGRES_USER=%q\\nPOSTGRES_DB=%q\\n' \"$POSTGRES_USER\" \"$POSTGRES_DB\" > /etc/backup.env && service cron start && exec docker-entrypoint.sh postgres"]

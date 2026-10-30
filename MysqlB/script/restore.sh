@@ -1,15 +1,17 @@
 #!/bin/bash
+# Uso: restore.sh /backup/mysql_AAAA-MM-DD_HHMM.sql.gz
+source /etc/backup.env
 
-USUARIO="root"
-PASSWORD="***REMOVED***"
-BASE_DATOS="CR_chat"
-ARCHIVO="/backup/mysql_2025.sql.gz"
+ARCHIVO="$1"
+if [ ! -f "$ARCHIVO" ]; then
+    echo "Uso: restore.sh <archivo .sql.gz>" >&2
+    ls -1t /backup/mysql_*.sql.gz 2>/dev/null | head -7 >&2
+    exit 1
+fi
 
-# Crear base de datos si no existe
-mysql -u "$USUARIO" -p"$PASSWORD" -e "CREATE DATABASE IF NOT EXISTS $BASE_DATOS;"
-
-# Restaurar desde backup comprimido
-if gunzip < "$ARCHIVO" | mysql -u "$USUARIO" -p"$PASSWORD" "$BASE_DATOS"; then
+set -o pipefail
+mysql -e "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\`;"
+if gunzip < "$ARCHIVO" | mysql "$MYSQL_DATABASE"; then
     echo "Restauración exitosa"
 else
     echo "Error en la restauración" >&2

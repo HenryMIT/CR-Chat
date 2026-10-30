@@ -30,7 +30,7 @@ services:
       dockerfile: ./Postgres/Dockerfile
     ports:
       - 5432:5432
-    volumes:      
+    volumes:
       - ./Postgres/postgreData:/var/lib/postgresql/data
       - ./Postgres/postgres-init:/docker-entrypoint-initdb.d
       - ./Postgres/backup:/backup
@@ -50,6 +50,3 @@ services:
     depends_on:
       - serverPG
       - servermysql
-
-volumes:
-  postgres:

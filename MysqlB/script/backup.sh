@@ -1,37 +1,31 @@
 #!/bin/bash
+# Respaldo lógico comprimido; conserva los 7 más recientes.
+# Credenciales en /root/.my.cnf y variables en /etc/backup.env (los genera el CMD del Dockerfile).
+source /etc/backup.env
 
-FECHA=$(date +%F_%H%M)
 BACKUP_DIR="/backup"
-NOMBRE_ARCHIVO="mysql_$FECHA.sql.gz"
-USUARIO="root"
-PASSWORD="***REMOVED***"
-BASE_DATOS="CR_chat"
+ARCHIVO="$BACKUP_DIR/mysql_$(date +%F_%H%M).sql.gz"
 
 # Esperar a que MySQL esté listo (máximo 60 segundos)
-REINTENTOS=12
-for i in $(seq 1 $REINTENTOS); do
-    if mysqladmin ping -u"$USUARIO" -p"$PASSWORD" --silent; then
-        echo "MySQL está listo. Iniciando backup..."
-        break
-    fi
+for i in $(seq 1 12); do
+    mysqladmin ping --silent >/dev/null 2>&1 && break
     echo "Esperando a que MySQL inicie... intento $i"
     sleep 5
 done
 
-# Verificar si MySQL está disponible después del tiempo de espera
-if ! mysqladmin ping -u"$USUARIO" -p"$PASSWORD" --silent; then
-    echo "MySQL no está disponible después de $REINTENTOS intentos. Abortando backup." >&2
+if ! mysqladmin ping --silent >/dev/null 2>&1; then
+    echo "MySQL no está disponible. Abortando backup." >&2
     exit 1
 fi
 
-# Realizar el backup
-if mysqldump -u "$USUARIO" -p"$PASSWORD" --single-transaction "$BASE_DATOS" | gzip > "$BACKUP_DIR/$NOMBRE_ARCHIVO"; then
-    echo "Backup realizado exitosamente: $BACKUP_DIR/$NOMBRE_ARCHIVO"
+set -o pipefail
+if mysqldump --single-transaction --routines "$MYSQL_DATABASE" | gzip > "$ARCHIVO"; then
+    echo "Backup realizado: $ARCHIVO"
 else
     echo "Error al realizar el backup" >&2
+    rm -f "$ARCHIVO"
     exit 1
 fi
 
-# Eliminar backups antiguos dejando solo los 7 más recientes
 cd "$BACKUP_DIR" || exit 1
 ls -1t mysql_*.sql.gz | tail -n +8 | xargs -r rm --
