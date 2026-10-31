@@ -1,0 +1,162 @@
+# Entorno de PRUEBAS del backend (aislado de la HA de Patroni/HAProxy del DBA).
+# No usar en producción. Se maneja con datos/tests/entorno-pruebas.sh, que genera contraseñas
+# aleatorias en un archivo fuera del repositorio y ejecuta:
+#   docker compose -p crchat-be -f datos/docker-compose.pruebas-backend.yml --env-file <tmp> up -d --build
+# Puertos solo en 127.0.0.1 (18xxx); sin container_name fijos; datos en volúmenes con nombre.
+name: crchat-be
+
+x-api-env: &api-env
+  APP_ENV: test
+  APP_DEBUG: "false"
+  DB_NAME: cr_chat
+  DB_RW_HOST: pg
+  DB_RW_PORT: "5432"
+  DB_RW_USER: app_rw
+  DB_RW_PASSWORD: ${PRUEBAS_APP_RW_PASSWORD:?}
+  DB_RO_HOST: pg
+  DB_RO_PORT: "5432"
+  DB_RO_USER: app_ro
+  DB_RO_PASSWORD: ${PRUEBAS_APP_RO_PASSWORD:?}
+  JWT_ACCESS_KEY: ${PRUEBAS_JWT_ACCESS_KEY:?}
+  JWT_ACCESS_TTL: ${PRUEBAS_JWT_ACCESS_TTL:-900}
+  MSG_ENC_KEY: ${PRUEBAS_MSG_ENC_KEY:?}
+  MSG_ENC_KEY_ID: "1"
+  REDIS_HOST: redis
+  REDIS_PASSWORD: ${PRUEBAS_REDIS_PASSWORD:?}
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_PUBLIC_ENDPOINT: http://127.0.0.1:18900
+  MINIO_ACCESS_KEY: crchat-pruebas
+  MINIO_SECRET_KEY: ${PRUEBAS_MINIO_PASSWORD:?}
+  MINIO_BUCKET: cr-chat-media
+  CORS_ORIGINS: http://localhost:5173,http://localhost:4200
+  REFRESH_COOKIE_SECURE: "false"
+  # Límites más holgados solo donde las pruebas registran/inician sesión muchas veces desde la misma IP;
+  # la política `login` (5/min por IP + identificador) se deja con su valor real para probar el 429.
+  RL_REGISTER: 500/3600
+  RL_LOGIN_IP: 1000/3600
+
+services:
+  pg:
+    image: cr_chat_postgresql
+    command: ["postgres"]
+    environment:
+      POSTGRES_DB: cr_chat
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${PRUEBAS_PG_SUPERPASS:?}
+    volumes:
+      - pg-datos:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d cr_chat"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  migraciones:
+    image: ghcr.io/amacneil/dbmate:2
+    command: ["--no-dump-schema", "--wait", "up"]
+    environment:
+      DATABASE_URL: postgres://postgres:${PRUEBAS_PG_SUPERPASS}@pg:5432/cr_chat?sslmode=disable
+    volumes:
+      - ../Postgres/migraciones:/db/migrations:ro
+    depends_on:
+      pg: { condition: service_healthy }
+
+  bootstrap-bd:
+    image: cr_chat_postgresql
+    entrypoint: ["bash", "-c"]
+    command:
+      - >
+        psql -v ON_ERROR_STOP=1 -v migrator_password="$$MIG" -v app_rw_password="$$RW" -v app_ro_password="$$RO"
+        -f /pg/bootstrap/asignar-credenciales.sql && psql -v ON_ERROR_STOP=1 -f /pg/seed/demo.sql
+    environment:
+      PGHOST: pg
+      PGUSER: postgres
+      PGDATABASE: cr_chat
+      PGPASSWORD: ${PRUEBAS_PG_SUPERPASS}
+      MIG: ${PRUEBAS_MIGRATOR_PASSWORD:?}
+      RW: ${PRUEBAS_APP_RW_PASSWORD}
+      RO: ${PRUEBAS_APP_RO_PASSWORD}
+    volumes:
+      - ../Postgres:/pg:ro
+    depends_on:
+      migraciones: { condition: service_completed_successfully }
+
+  redis:
+    image: redis:7-alpine
+    command: ["sh", "-c", "printf 'requirepass %s\\nappendonly no\\n' \"$$REDIS_PASSWORD\" > /tmp/redis.conf && exec redis-server /tmp/redis.conf"]
+    environment:
+      REDIS_PASSWORD: ${PRUEBAS_REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    command: ["server", "/data", "--address", ":9000"]
+    environment:
+      MINIO_ROOT_USER: crchat-pruebas
+      MINIO_ROOT_PASSWORD: ${PRUEBAS_MINIO_PASSWORD}
+    ports:
+      - "127.0.0.1:18900:9000"
+    volumes:
+      - minio-datos:/data
+
+  minio-init:
+    image: cgr.dev/chainguard/minio-client:latest
+    command: ["mb", "--ignore-existing", "local/cr-chat-media"]
+    environment:
+      MC_HOST_local: http://crchat-pruebas:${PRUEBAS_MINIO_PASSWORD}@minio:9000
+    restart: on-failure
+    depends_on: [minio]
+
+  web-datos:
+    build:
+      context: ..
+      dockerfile: ./datos/Dockerfile
+      args:
+        COMPOSER_DEV: "1"
+    environment: *api-env
+    # Código montado (solo lectura) para iterar sin reconstruir la imagen
+    volumes:
+      - ./src:/var/www/html/src:ro
+      - ./ws:/var/www/html/ws:ro
+      - ./tests/unit:/var/www/html/tests/unit:ro
+      - ../docs/contratos/openapi.yaml:/var/www/html/openapi/openapi.yaml:ro
+    ports:
+      - "127.0.0.1:18080:80"
+    depends_on:
+      bootstrap-bd: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  ws:
+    build:
+      context: ..
+      dockerfile: ./datos/Dockerfile
+      args:
+        COMPOSER_DEV: "1"
+    command: ["php", "ws/server.php", "start"]
+    environment:
+      <<: *api-env
+      MEDIA_PURGE_INTERVAL: "3600"
+    # Código montado (solo lectura) para iterar sin reconstruir la imagen
+    volumes:
+      - ./src:/var/www/html/src:ro
+      - ./ws:/var/www/html/ws:ro
+      - ./tests/unit:/var/www/html/tests/unit:ro
+      - ../docs/contratos/openapi.yaml:/var/www/html/openapi/openapi.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "php -r '$$s=@fsockopen(\"127.0.0.1\",8080,$$e,$$m,1); exit($$s?0:1);'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "127.0.0.1:18081:8080"
+    depends_on:
+      bootstrap-bd: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+volumes:
+  pg-datos:
+  minio-datos:

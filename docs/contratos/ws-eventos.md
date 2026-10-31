@@ -12,8 +12,9 @@ tiempo real y transporta las señales efímeras (`typing`, `seen`, presencia).
 | Implementación | Workerman (PHP 8.4), servicio `ws` de `docker-compose.yml`, misma imagen que `datos/` |
 | Subprotocolo | `cr-chat.v1` (`Sec-WebSocket-Protocol`). Si el cliente no lo pide, el servidor lo acepta igual |
 | Codificación | Frames de texto, JSON UTF-8. Máximo 16 KiB por frame (más grande: cierre `1009`) |
-| Origen | Se valida el encabezado `Origin` contra la misma lista de orígenes permitidos de CORS. Si no coincide, se rechaza el handshake (HTTP 403) |
-| Bus interno | Redis pub/sub (la API publica y el servidor WS se suscribe) |
+| Origen | Se valida el encabezado `Origin` contra la misma lista de orígenes permitidos de CORS (`CORS_ORIGINS`, por defecto `http://localhost:5173,http://localhost:4200`). Si no coincide, se rechaza el handshake (HTTP 403). Sin `Origin` (clientes que no son navegador) se acepta: el riesgo de CSWSH solo existe en navegadores, que siempre lo envían |
+| Bus interno | Redis pub/sub (la API publica y cada proceso WS hace `PSUBSCRIBE user:* session:*`) |
+| Implementación | `datos/ws/server.php` + `datos/src/Ws/Hub.php`; `php ws/server.php start`. Procesos: `cr-chat-ws` (`WS_WORKERS`) y `cr-chat-tareas` (job de media) |
 
 El token **no** viaja en la URL (quedaría en logs del proxy y en el historial): se envía en el
 primer mensaje `auth`.
@@ -64,9 +65,10 @@ cliente                                   servidor ws
 2. Antes de `auth.ok`, cualquier otro mensaje del cliente produce cierre `4003` (`not_authenticated`).
 3. El servidor valida el JWT igual que `JwtMiddleware` (firma, `iss`, `aud`, `typ=access`, `exp`)
    **y** comprueba en Redis que la sesión `sid` siga activa y el usuario no esté desactivado.
-   Si falla: `error` con `code: invalid_token` y cierre `4401`.
-4. Máximo 3 intentos de `auth` fallidos por conexión y 10 conexiones simultáneas por usuario
-   (la más antigua se cierra con `4008` `too_many_connections`).
+   Si falla: `error` con `code: invalid_token` y cierre `4401` (el primer fallo cierra la conexión;
+   no hay reintentos dentro de la misma conexión).
+4. Máximo 10 conexiones simultáneas por usuario y proceso WS (la más antigua se cierra con `4008`
+   `too_many_connections`).
 
 ### 3.2 Reautenticación
 
@@ -122,10 +124,12 @@ aviso y los clientes recuperan el evento al resincronizar.
 |---|---|---|
 | `user:{user_id}` | API | Todos los eventos dirigidos a un usuario (uno por destinatario; un mensaje nuevo se publica en el canal del receptor **y** en el del emisor, para sus otros dispositivos) |
 | `session:{session_id}` | API | `session.revoked` de una sesión concreta |
-| `presence` | Servidor WS | Cambios de presencia entre nodos WS (si hay más de uno) |
+| *(presencia)* | Servidor WS | Los cambios de presencia se publican como evento `presence` en `user:{id}` de cada usuario relacionado, así llegan a cualquier nodo WS (no hace falta un canal `presence` aparte) |
 
-`user_id` es el UUID público. El servidor WS se suscribe a `user:{id}` y `session:{sid}` de cada
-conexión autenticada y reenvía el sobre tal cual (filtrando los eventos internos `session.*`).
+`user_id` es el UUID público. Cada proceso WS se suscribe por patrón a `user:*` y `session:*` y
+reenvía el sobre tal cual a sus conexiones locales de ese usuario/sesión, filtrando los eventos
+internos: `session.revoked` (cierra las conexiones de la sesión con `4401 session_revoked`) y
+`block.changed` (lo publica la API al bloquear/desbloquear para invalidar la caché de relaciones).
 
 Ejemplo (PHP, tras el commit del envío):
 
@@ -153,9 +157,9 @@ $redis->publish("user:$emisorId",   json_encode($evento, JSON_UNESCAPED_UNICODE)
 | `message.deleted` | API | ambos participantes | `{ conversation_id, message_id, deleted_at }` |
 | `receipt.delivered` | API/WS | emisor de los mensajes | `{ conversation_id, user_id, up_to_message_id, at }` |
 | `receipt.seen` | API/WS | emisor de los mensajes | `{ conversation_id, user_id, up_to_message_id, at }` |
-| `conversation.new` | API | ambos participantes | `{ conversation: Conversation }` (vista de cada destinatario) |
+| `conversation.new` | API | ambos participantes | `{ conversation: Conversation }` (vista de cada destinatario; en la del otro participante `contact_alias` puede ser null) |
 | `typing` | WS | el otro participante | `{ conversation_id, user_id, state: "start" \| "stop" }` |
-| `presence` | WS | usuarios con relación | `{ user_id, status: "online" \| "offline", last_seen_at }` |
+| `presence` | WS | usuarios con relación | `{ user_id, status: "online" \| "offline", last_seen_at }` (`last_seen_at` null si online) |
 | `error` | WS | la conexión | `{ reply_to?, code, detail }` |
 
 Ejemplo `message.new`:
@@ -193,7 +197,11 @@ Notas:
   compartida) y nunca entre usuarios bloqueados. Al conectar, el servidor no envía la presencia de
   todos los contactos: el cliente la pregunta con `presence.query` (ver abajo).
 - `receipt.delivered` lo genera automáticamente el servidor WS cuando entrega `message.new` a
-  alguna conexión del receptor (marca en BD vía la API interna/función de BD y publica al emisor).
+  alguna conexión del receptor (llama a `fn_marcar_recibos` con el usuario receptor y publica al
+  emisor solo si cambió algo). La API también publica `receipt.delivered` al listar mensajes y
+  `receipt.seen` cuando el usuario envía un mensaje (responder implica haber leído lo anterior).
+- `message.new` / `message.edited`: el emisor recibe su vista (con `client_id` y `status`); el otro
+  participante, la suya (`client_id: null`, sin `status`).
 
 Códigos de `error`:
 
@@ -212,19 +220,23 @@ Códigos de `error`:
 | `type` | `data` | Respuesta | Límite |
 |---|---|---|---|
 | `auth` | `{ access_token }` | `auth.ok` o `error` + cierre `4401` | 3 fallos por conexión |
-| `ping` | `{}` | `pong` | 1 cada 5 s |
-| `typing` | `{ conversation_id, state: "start" \| "stop" }` | ninguna (o `error`) | 1 `start` cada 3 s por conversación |
+| `ping` | `{}` | `pong` | 1 cada 5 s (orientativo; cuenta para el límite global) |
+| `typing` | `{ conversation_id, state: "start" \| "stop" }` | ninguna (o `error`) | 1 `start` cada 3 s por conversación (los repetidos no se reenvían, solo renuevan la caducidad) |
 | `seen` | `{ conversation_id, up_to_message_id }` | `error` solo si falla | 10 cada 10 s |
 | `presence.query` | `{ user_ids: [UUID, …] }` (máx. 100) | un `presence` por usuario con relación | 5 por minuto |
 
 - `typing`: el servidor comprueba que el usuario participa en la conversación (cache Redis de
-  participantes, TTL 5 min) y que no hay bloqueo; reenvía al otro participante. No se persiste. Un
-  `start` caduca solo a los 6 s si no llega `stop`.
+  participantes, TTL 5 min) y que no hay bloqueo (`fn_filtrar_relacionados`, caché de 30 s que se
+  invalida con `block.changed`); reenvía al otro participante. No se persiste. Si no llega `stop`, a
+  los 6 s el servidor envía él mismo `typing` con `state: "stop"`.
 - `seen`: equivale a `POST /conversations/{id}/receipts` con `status: seen`. El servidor WS lo
   persiste llamando a la misma función de BD (validando participación con el `user_id` autenticado)
   y publica `receipt.seen` al emisor.
-- Límite global por conexión: 20 mensajes en 10 s. Al superarlo, `error` `rate_limited`; si se
-  mantiene 30 s, cierre `4029`.
+- Límite global por conexión: 20 mensajes en 10 s. Al superarlo, `error` `rate_limited` (con
+  `retry_after`); si se mantiene 30 s, cierre `4029`.
+- Frames de más de 16 KiB: cierre `1009`. Por encima de 64 KiB la conexión TCP se corta sin frame de cierre.
+- Heartbeat: el servidor envía un frame de control *ping* cada 30 s; cualquier mensaje o *pong*
+  cuenta como actividad; sin actividad en 60 s cierra con `1001`.
 
 ## 6. Garantías de entrega y resincronización
 
@@ -287,7 +299,7 @@ operations:
 
 (Las referencias `$ref` a mensajes se omiten por brevedad; las cargas útiles son las de §5.)
 
-## 8. Pruebas previstas (`datos/tests/ws_test.py`)
+## 8. Pruebas (`datos/tests/ws_test.py`, implementadas)
 
 - Sin `auth` en 5 s → cierre `4001`. Mensaje antes de `auth` → `4003`.
 - Token inválido / sesión revocada → `error invalid_token` + `4401`.
