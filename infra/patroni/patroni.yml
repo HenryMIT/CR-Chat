@@ -1,0 +1,127 @@
+# =============================================================================
+# Configuración común de Patroni para pg1/pg2 (clúster "crchat").
+# Lo que cambia por nodo y los secretos llegan por variables de entorno, que
+# Patroni aplica por encima de este archivo (ver docker-compose.yml):
+#   PATRONI_NAME, PATRONI_RESTAPI_CONNECT_ADDRESS, PATRONI_POSTGRESQL_CONNECT_ADDRESS,
+#   PATRONI_ETCD3_HOSTS, PATRONI_SUPERUSER_PASSWORD, PATRONI_REPLICATION_PASSWORD,
+#   PATRONI_RESTAPI_USERNAME, PATRONI_RESTAPI_PASSWORD.
+# =============================================================================
+scope: crchat
+namespace: /service/
+
+restapi:
+  listen: 0.0.0.0:8008
+  # GET /primary, /replica, /health... quedan abiertos para HAProxy (red interna);
+  # PATCH /config, /switchover, /restart exigen usuario/clave (PATRONI_RESTAPI_*).
+
+etcd3:
+  protocol: http
+
+bootstrap:
+  # Valores de la DCS: solo se usan al crear el clúster. Después se cambian con
+  # `patronictl edit-config` o PATCH /config (quedan en etcd, iguales en ambos nodos).
+  dcs:
+    # Failover: el líder se pierde a lo sumo en ttl s (caída abrupta); con
+    # `docker stop` Patroni libera la llave al apagarse y la réplica asume en pocos
+    # segundos. Regla: loop_wait + 2*retry_timeout <= ttl.
+    ttl: 20
+    loop_wait: 5
+    retry_timeout: 5
+    # No promover una réplica que va más de 1 MiB atrasada (evita perder datos).
+    maximum_lag_on_failover: 1048576
+    # failsafe_mode: si etcd (1 nodo) cae, el líder sigue siéndolo mientras vea a
+    # todos los miembros por la API REST, en vez de degradarse a solo lectura.
+    failsafe_mode: true
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        # --- Conexiones y memoria (límite del contenedor: 512 MiB) ---
+        max_connections: 150
+        superuser_reserved_connections: 5
+        shared_buffers: 128MB
+        effective_cache_size: 320MB
+        work_mem: 4MB
+        maintenance_work_mem: 64MB
+        password_encryption: scram-sha-256
+        # --- WAL, replicación y CDC ---
+        wal_level: logical            # streaming + decodificación lógica (Debezium)
+        wal_log_hints: "on"           # pg_rewind (además, initdb con checksums)
+        max_wal_senders: 10
+        max_replication_slots: 10
+        wal_keep_size: 256MB
+        # Tope de WAL retenido por un slot sin consumidor (p. ej. CDC detenido):
+        # al superarlo, el slot se invalida en vez de llenar el disco.
+        max_slot_wal_keep_size: 2GB
+        hot_standby: "on"
+        hot_standby_feedback: "on"    # requerido para copiar slots lógicos a réplicas
+        max_wal_size: 1GB
+        min_wal_size: 128MB
+        checkpoint_completion_target: 0.9
+        # --- Archivado continuo (PITR) ---
+        archive_mode: "on"
+        archive_command: pgbackrest --stanza=crchat archive-push "%p"
+        # RPO máximo con poca actividad: fuerza un cambio de segmento cada 60 s.
+        archive_timeout: 60s
+        # --- Observabilidad ---
+        shared_preload_libraries: pg_stat_statements,auto_explain
+        pg_stat_statements.max: 5000
+        pg_stat_statements.track: top
+        auto_explain.log_min_duration: 500ms
+        auto_explain.log_analyze: "off"
+        auto_explain.log_format: text
+        auto_explain.log_nested_statements: "on"
+        log_min_duration_statement: 1000ms
+        log_checkpoints: "on"
+        log_lock_waits: "on"
+        log_temp_files: 0
+        log_autovacuum_min_duration: 10s
+        log_line_prefix: "%m [%p] %q%u@%d "
+        track_io_timing: "on"
+        timezone: UTC
+        log_timezone: UTC
+      # Réplicas que se quedaron atrás recuperan WAL del repositorio de pgBackRest.
+      recovery_conf:
+        restore_command: pgbackrest --stanza=crchat archive-get %f "%p"
+  initdb:
+    - encoding: UTF8
+    - locale: C.UTF-8
+    - data-checksums
+    - auth-local: peer
+    - auth-host: scram-sha-256
+
+postgresql:
+  listen: 0.0.0.0:5432
+  data_dir: /var/lib/postgresql/data/pgdata
+  bin_dir: /usr/lib/postgresql/17/bin
+  pgpass: /tmp/pgpass0
+  authentication:
+    superuser:
+      username: postgres
+    replication:
+      username: replicator
+    # pg_rewind con el superusuario (por defecto si no se define `rewind`).
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+  create_replica_methods:
+    - basebackup
+  basebackup:
+    - checkpoint: fast
+  # Solo scram desde la red interna de Docker (samenet); el superusuario local por
+  # socket con peer (Patroni, pgBackRest). Todo lo demás se rechaza.
+  pg_hba:
+    - local   all          postgres                 peer
+    - local   all          all                      scram-sha-256
+    - host    replication  replicator   samenet     scram-sha-256
+    - host    all          all          samenet     scram-sha-256
+    - host    all          all          0.0.0.0/0   reject
+    - host    all          all          ::/0        reject
+
+watchdog:
+  mode: off
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false

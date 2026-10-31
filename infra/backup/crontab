@@ -1,0 +1,14 @@
+# =============================================================================
+# Jobs de CR_Chat (cron del contenedor `backup`, zona horaria = $TZ).
+# Cada job se ejecuta como root SOLO para escribir en el log del contenedor;
+# el trabajo real corre como `postgres` (gosu) dentro de ejecutar.sh.
+# =============================================================================
+SHELL=/bin/bash
+PATH=/usr/lib/postgresql/17/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# m  h  dom mon dow  usuario  comando
+0    2  *   *   0    root     /usr/local/lib/crchat/ejecutar.sh respaldo full  > /proc/1/fd/1 2>&1
+0    2  *   *   1-6  root     /usr/local/lib/crchat/ejecutar.sh respaldo diff  > /proc/1/fd/1 2>&1
+30   2  *   *   *    root     /usr/local/lib/crchat/ejecutar.sh globales       > /proc/1/fd/1 2>&1
+0    3  *   *   *    root     /usr/local/lib/crchat/ejecutar.sh purgar-sesiones > /proc/1/fd/1 2>&1
+15   3  1   *   *    root     /usr/local/lib/crchat/ejecutar.sh particiones    > /proc/1/fd/1 2>&1
+0    *  *   *   *    root     /usr/local/lib/crchat/ejecutar.sh verificar      > /proc/1/fd/1 2>&1

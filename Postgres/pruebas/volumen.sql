@@ -1,5 +1,5 @@
 -- Volumen sintético para docs/db/optimizacion.md. SOLO en bases desechables
--- (superusuario, tras migraciones 001-005 + seed demo y SIN haber corrido las
+-- (superusuario, tras migraciones 001-004 + seed demo y SIN haber corrido las
 -- pruebas: asume Ana = id 1, Bruno = id 2 y la conversación Ana<->Bruno = id 1).
 \set ON_ERROR_STOP on
 INSERT INTO usuario (nombre_usuario, telefono, email, pass_hash)

@@ -6,7 +6,7 @@ capturaron con `auto_explain` (`log_nested_statements=on`, `log_analyze=on`, `lo
 de la **segunda** ejecución (caché caliente); la primera ejecución en frío fue de 1,5x a 6x más lenta.
 
 Volumen sintético (`Postgres/pruebas/volumen.sql`; planes con `Postgres/pruebas/explain.sql`), con las
-migraciones 001-005:
+migraciones 001-004:
 
 | Tabla | Filas |
 |---|---|
@@ -18,7 +18,7 @@ migraciones 001-005:
 | recibo_mensaje | 1 199 940 (1/3 sin ver) |
 | Tamaño total de la BD | 831 MB (682 MB en la Fase 1; la diferencia son los `public_id`, `nonce` e índices nuevos) |
 
-## Resultados (API v1, migración 005)
+## Resultados (API v1, migración 003)
 
 | Función (caso) | Plan principal | Total de la función |
 |---|---|---|
@@ -70,8 +70,21 @@ en el de la conversación.
    planificador elige correctamente Hash Join. No es un caso real (el cliente marca lo que tiene en pantalla); si
    apareciera, la API puede marcar por lotes acotando `up_to_message_id`.
 
-## Pendientes (Fase 2)
+## Fase 2 (aplicado)
 
-- `shared_preload_libraries = 'pg_stat_statements,auto_explain'` en Patroni (`auto_explain.log_min_duration = '250ms'`).
-- Ajustar `shared_buffers`, `work_mem` y `effective_cache_size` según los límites de memoria del compose.
-- Programar `fn_crear_particiones_auditoria(3)` (mensual) y `fn_purgar_sesiones()` (diario) como `migrator`.
+- `shared_preload_libraries = 'pg_stat_statements,auto_explain'` en la DCS de Patroni (`infra/patroni/patroni.yml`):
+  `auto_explain.log_min_duration = 500ms` (sin `log_analyze`, para no penalizar todas las consultas),
+  `log_min_duration_statement = 1s`, `track_io_timing = on`. `pg_stat_statements` ya recolecta en el líder:
+  tras las pruebas, la función más costosa por llamada fue `fn_registrar_usuario` (≈ 9 ms, dominada por los
+  triggers de auditoría y los UNIQUE), y las lecturas de listado quedan en 1-4 ms con el seed.
+- Memoria por nodo (límite 640 MiB): `shared_buffers = 128MB`, `effective_cache_size = 320MB`, `work_mem = 4MB`,
+  `maintenance_work_mem = 64MB`, `max_connections = 150` (50 `app_rw` + 50 `app_ro` + 5 `migrator` + 3 `cdc_lector`
+  + replicación y reserva).
+- Jobs como `migrator` en el contenedor `backup`: `fn_crear_particiones_auditoria(3)` mensual y
+  `fn_purgar_sesiones()` diario (ver `docs/db/recuperacion.md`).
+- Funciones nuevas a pedido del backend, sin índices nuevos:
+  - `fn_crear_contacto_usuario`: `usuario_public_id_uq` (objetivo), `fn__hay_relacion` usa `contacto_par_uq` en
+    ambos sentidos y `conversacion_par_uq`; `fn__hay_bloqueo` usa la PK de `bloqueo` y `bloqueo_id_bloqueado_ix`.
+    Todo son Index Scan por igualdad (< 0,1 ms con el volumen de la Fase 1b).
+  - `contacto_alias` en `fn__conversaciones`: sale del `LEFT JOIN contacto` que ya existía para `es_contacto`
+    (`contacto_par_uq`); no agrega trabajo al plan.

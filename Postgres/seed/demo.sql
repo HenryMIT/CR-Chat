@@ -1,5 +1,5 @@
 -- =============================================================================
--- Seed de DEMO de CR_Chat (NO usar en producción). Requiere migraciones 001-005.
+-- Seed de DEMO de CR_Chat (NO usar en producción). Requiere migraciones 001-004.
 -- Contraseñas en texto plano documentadas en docs/db/README.md; aquí solo están
 -- los hashes argon2id generados con PHP 8.4 (password_hash(..., PASSWORD_ARGON2ID)).
 -- No se insertan mensajes ni avatares:

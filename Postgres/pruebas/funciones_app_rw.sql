@@ -1,5 +1,5 @@
 -- =============================================================================
--- Pruebas de contrato de las funciones v1 (migraciones 001-005), CONECTADO COMO
+-- Pruebas de contrato de las funciones v1 (migraciones 001-004), CONECTADO COMO
 -- app_rw sobre una base recién migrada + seed demo. Cada caso imprime "OK ..."
 -- o aborta el script (ON_ERROR_STOP) con "FALLO ...".
 --   psql -U app_rw -d cr_chat -v ON_ERROR_STOP=1 -f Postgres/pruebas/funciones_app_rw.sql
@@ -278,6 +278,44 @@ SELECT pg_temp.espera(format('SELECT fn_reactivar_usuario(%L)', :'carla'), 'CR40
 SELECT fn_borrar_usuario(:'diego');
 UPDATE usuario SET deleted_at = now() - interval '31 days' WHERE public_id = :'diego';
 SELECT pg_temp.espera(format('SELECT fn_reactivar_usuario(%L)', :'diego'), 'CR404', 'reactivar fuera del plazo de gracia');
+
+\echo '--- contacto por user_id (fn_crear_contacto_usuario) y contacto_alias en conversaciones'
+-- Usuarios nuevos sin relación previa con nadie: Eva, Fede y Gabi.
+SELECT fn_registrar_usuario('Eva Prueba', '+50670000021', 'eva@demo.crchat.local', '$argon2id$v=19$m=65536,t=4,p=1$abc$def') AS eva \gset
+SELECT fn_registrar_usuario('Fede Prueba', '+50670000022', 'fede@demo.crchat.local', '$argon2id$v=19$m=65536,t=4,p=1$abc$def') AS fede \gset
+SELECT fn_registrar_usuario('Gabi Prueba', '+50670000023', 'gabi@demo.crchat.local', '$argon2id$v=19$m=65536,t=4,p=1$abc$def') AS gabi \gset
+SELECT pg_temp.espera(format('SELECT * FROM fn_crear_contacto_usuario(%L, %L)', :'eva', :'fede'), 'CR404', 'por user_id sin relación (IDOR/enumeración: 404)');
+SELECT pg_temp.espera(format('SELECT * FROM fn_crear_contacto_usuario(%L, %L)', :'eva', gen_random_uuid()), 'CR404', 'por user_id inexistente (mismo 404)');
+SELECT pg_temp.espera(format('SELECT * FROM fn_crear_contacto_usuario(%L, %L)', :'eva', :'eva'), 'CR404', 'por user_id a uno mismo (mismo 404)');
+SELECT pg_temp.espera(format('SELECT * FROM fn_crear_contacto_usuario(%L, %L)', :'ana', :'diego'), 'CR404', 'por user_id a un usuario dado de baja (mismo 404)');
+SELECT pg_temp.espera(format('SELECT * FROM fn_crear_contacto_usuario(%L, %L)', gen_random_uuid(), :'ana'), 'CR401', 'por user_id con usuario autenticado inválido');
+-- Fede agenda a Eva por teléfono => Eva tiene relación (contacto inverso) con Fede.
+SELECT id AS c_fede_eva FROM fn_crear_contacto(:'fede', '+50670000021') \gset
+SELECT id AS c_eva_fede, creado AS c_eva_fede_creado FROM fn_crear_contacto_usuario(:'eva', :'fede', '  Fede  ') \gset
+SELECT pg_temp.ok(:'c_eva_fede_creado'::boolean, 'por user_id con contacto inverso: creado=true');
+SELECT pg_temp.ok((SELECT alias = 'Fede' AND id_usuario = :'fede' AND telefono = '+50670000022' FROM fn_obtener_contacto(:'eva', :'c_eva_fede')), 'por user_id: alias recortado, usuario y teléfono correctos');
+SELECT pg_temp.ok((SELECT id = :'c_eva_fede' AND NOT creado AND alias = 'Fede' FROM fn_crear_contacto_usuario(:'eva', :'fede', 'Otro')), 'por user_id idempotente (mismo id, creado=false, no cambia alias)');
+SELECT pg_temp.espera(format('SELECT * FROM fn_crear_contacto_usuario(%L, %L, %L)', :'fede', :'eva', repeat('x', 51)), 'CR422', 'por user_id con alias > 50', 'alias');
+-- Bloqueo en cada sentido => el mismo 404.
+SELECT id AS c_fede_gabi FROM fn_crear_contacto(:'fede', '+50670000023') \gset
+SELECT pg_temp.ok(fn_bloquear_usuario(:'gabi', :'fede'), 'Gabi bloquea a Fede');
+SELECT pg_temp.espera(format('SELECT * FROM fn_crear_contacto_usuario(%L, %L)', :'gabi', :'fede'), 'CR404', 'por user_id a quien bloqueé (404)');
+SELECT fn_desbloquear_usuario(:'gabi', :'fede');
+SELECT pg_temp.ok(fn_bloquear_usuario(:'fede', :'gabi'), 'Fede bloquea a Gabi');
+SELECT pg_temp.espera(format('SELECT * FROM fn_crear_contacto_usuario(%L, %L)', :'gabi', :'fede'), 'CR404', 'por user_id a quien me bloqueó (404)');
+SELECT fn_desbloquear_usuario(:'fede', :'gabi');
+SELECT pg_temp.ok((SELECT creado AND id_usuario = :'fede' FROM fn_crear_contacto_usuario(:'gabi', :'fede')), 'por user_id tras desbloquear');
+-- Relación solo por conversación compartida: Eva agenda a Gabi, conversa y lo borra.
+SELECT id AS c_eva_gabi FROM fn_crear_contacto(:'eva', '+50670000023', 'Gabi') \gset
+SELECT id AS conv_eg, contacto_alias AS conv_eg_alias FROM fn_crear_conversacion(:'eva', :'c_eva_gabi') \gset
+SELECT pg_temp.ok(:'conv_eg_alias' = 'Gabi', 'crear conversación devuelve contacto_alias');
+SELECT fn_borrar_contacto(:'eva', :'c_eva_gabi');
+SELECT pg_temp.ok((SELECT contacto_alias IS NULL AND NOT es_contacto FROM fn_obtener_conversacion(:'eva', :'conv_eg')), 'contacto_alias NULL si ya no lo tengo agendado');
+SELECT pg_temp.ok((SELECT creado AND id_conversacion = :'conv_eg' FROM fn_crear_contacto_usuario(:'gabi', :'eva', 'Eva del chat')), 'por user_id con conversación compartida (trae conversation_id)');
+SELECT pg_temp.ok((SELECT contacto_alias = 'Eva del chat' AND es_contacto FROM fn_obtener_conversacion(:'gabi', :'conv_eg')), 'obtener conversación: contacto_alias del llamante');
+SELECT pg_temp.ok((SELECT bool_and(contacto_alias IS NOT DISTINCT FROM CASE id WHEN :'conv_ab' THEN 'Bruno' WHEN :'conv_ac' THEN 'Carla (trabajo)' END) FROM fn_listar_conversaciones(:'ana')), 'listar conversaciones: contacto_alias por fila');
+SELECT pg_temp.ok((SELECT contacto_alias = 'Ana' FROM fn_obtener_conversacion(:'bruno', :'conv_ab')), 'contacto_alias es el de la agenda de quien consulta (Bruno ve "Ana")');
+SELECT pg_temp.espera(format('SELECT * FROM fn_obtener_conversacion(%L, %L)', :'fede', :'conv_eg'), 'CR404', 'IDOR: contacto_alias de una conversación ajena');
 
 \echo '--- privilegios de app_rw'
 SELECT pg_temp.espera('DELETE FROM usuario', '42501', 'app_rw sin DELETE en usuario');

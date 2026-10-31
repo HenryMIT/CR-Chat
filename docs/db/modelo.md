@@ -1,6 +1,6 @@
 # Modelo de datos de CR_Chat (PostgreSQL 17)
 
-Fuente: `Postgres/migraciones/002_esquema.sql` + `004_esquema_api_v1.sql`. Contrato de funciones:
+Fuente: `Postgres/migraciones/002_esquema.sql`. Contrato de funciones:
 [`docs/contratos/db-funciones.md`](../contratos/db-funciones.md).
 
 ```mermaid

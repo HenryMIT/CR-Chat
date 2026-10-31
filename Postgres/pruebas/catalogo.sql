@@ -61,3 +61,17 @@ WHERE p.pronamespace = 'public'::regnamespace AND p.proowner = 'migrator'::regro
 \echo '7) FK sin ON DELETE explícito distinto de NO ACTION, salvo las justificadas (esperado: solo mensaje_media_fk)'
 SELECT conrelid::regclass, conname FROM pg_constraint
 WHERE contype = 'f' AND connamespace = 'public'::regnamespace AND confdeltype = 'a';
+
+\echo '8) cdc_lector con algo más que REPLICATION, o con acceso a pass_hash/sesiones (esperado: 0 filas)'
+SELECT 'atributos' AS problema FROM pg_roles
+WHERE rolname = 'cdc_lector' AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls OR NOT rolreplication)
+UNION ALL
+SELECT 'pass_hash' WHERE has_column_privilege('cdc_lector', 'usuario', 'pass_hash', 'SELECT')
+UNION ALL
+SELECT t FROM unnest(ARRAY['sesion', 'sesion_refresh', 'auditoria']) t
+WHERE has_table_privilege('cdc_lector', t, 'SELECT');
+
+\echo '9) Tablas publicadas para CDC que incluyen pass_hash o datos de sesión (esperado: 0 filas)'
+SELECT p.tablename, p.attnames FROM pg_publication_tables p
+WHERE p.pubname = 'crchat_cdc'
+  AND ('pass_hash' = ANY (p.attnames) OR p.tablename IN ('sesion', 'sesion_refresh', 'auditoria'));

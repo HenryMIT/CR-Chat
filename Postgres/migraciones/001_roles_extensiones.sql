@@ -16,8 +16,11 @@ CREATE EXTENSION IF NOT EXISTS citext;
 -- pg_trgm: búsqueda ILIKE '%texto%' en alias de contacto con índice GIN.
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 -- pg_stat_statements: el objeto se crea aquí; para que recolecte datos el servidor
--- debe tener shared_preload_libraries = 'pg_stat_statements' (se configura en Fase 2).
+-- debe tener shared_preload_libraries = 'pg_stat_statements' (lo configura Patroni,
+-- infra/patroni/patroni.yml).
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+-- unaccent: orden y búsqueda de contactos sin acentos (fn_normalizar). "Trusted" en PG13+.
+CREATE EXTENSION IF NOT EXISTS unaccent;
 
 -- Roles -----------------------------------------------------------------------
 DO $$
@@ -34,6 +37,11 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_ro') THEN
         CREATE ROLE app_ro NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
     END IF;
+    -- CDC (Debezium, profile `cdc`): replicación lógica de la publicación crchat_cdc
+    -- (migración 004). REPLICATION sin SUPERUSER; solo SELECT sobre lo publicado.
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cdc_lector') THEN
+        CREATE ROLE cdc_lector NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT REPLICATION;
+    END IF;
 END
 $$;
 
@@ -41,7 +49,14 @@ $$;
 -- se deja explícito por si la BD viene de una versión anterior).
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO migrator;
-GRANT USAGE ON SCHEMA public TO app_rw, app_ro;
+GRANT USAGE ON SCHEMA public TO app_rw, app_ro, cdc_lector;
+-- CREATE PUBLICATION exige CREATE sobre la base: migrator es dueño de la
+-- publicación de CDC (migración 004) igual que de las tablas.
+DO $$
+BEGIN
+    EXECUTE format('GRANT CREATE ON DATABASE %I TO migrator', current_database());
+END
+$$;
 
 -- migrator debe poder registrar migraciones cuando dbmate se conecte con ese rol.
 DO $$
@@ -64,10 +79,12 @@ ALTER ROLE app_ro SET default_transaction_read_only = on;
 -- migrate:down
 -- DROP OWNED elimina los privilegios y default ACL de los roles en ESTA base de datos.
 -- Si los roles tienen privilegios en otra base del clúster, DROP ROLE fallará (a propósito).
-DROP OWNED BY app_ro, app_rw, migrator;
+DROP OWNED BY cdc_lector, app_ro, app_rw, migrator;
+DROP ROLE IF EXISTS cdc_lector;
 DROP ROLE IF EXISTS app_ro;
 DROP ROLE IF EXISTS app_rw;
 DROP ROLE IF EXISTS migrator;
+DROP EXTENSION IF EXISTS unaccent;
 DROP EXTENSION IF EXISTS pg_stat_statements;
 DROP EXTENSION IF EXISTS pg_trgm;
 DROP EXTENSION IF EXISTS citext;
