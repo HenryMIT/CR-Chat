@@ -1,0 +1,242 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/plus-jakarta-sans';
+
+/*
+ * Tema propio de CR_Chat.
+ * Paleta inspirada en Costa Rica: "selva" (verde azulado profundo, primario),
+ * "guaria" (la orquídea nacional, acento) y "piedra" (neutros verdosos).
+ * Todas las combinaciones texto/fondo usadas cumplen WCAG AA (>= 4.5:1).
+ * La interfaz usa tokens semánticos (fondo, superficie, texto, tenue...) que
+ * cambian entre modo claro y oscuro; las escalas crudas quedan para casos puntuales.
+ */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Se elimina la paleta por defecto de Tailwind: solo existen nuestros colores. */
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+  --color-blanco: #ffffff;
+  --color-negro: #000000;
+
+  --color-selva-50: #eefaf6;
+  --color-selva-100: #d5f3e9;
+  --color-selva-200: #aee6d4;
+  --color-selva-300: #79d2b9;
+  --color-selva-400: #4fd1b5;
+  --color-selva-500: #1a9e85;
+  --color-selva-600: #0f7e6c;
+  --color-selva-700: #0b5f53;
+  --color-selva-800: #0e5248;
+  --color-selva-900: #0b3d36;
+  --color-selva-950: #06201b;
+
+  --color-guaria-50: #fdf2fa;
+  --color-guaria-100: #fbe4f4;
+  --color-guaria-200: #f8c8ea;
+  --color-guaria-300: #f4a0d9;
+  --color-guaria-400: #f07ccd;
+  --color-guaria-500: #dc4cb0;
+  --color-guaria-600: #c4318f;
+  --color-guaria-700: #b0287f;
+  --color-guaria-800: #8a1f64;
+  --color-guaria-900: #6b1b4f;
+  --color-guaria-950: #2a0620;
+
+  --color-piedra-50: #f5f7f6;
+  --color-piedra-100: #eaeeec;
+  --color-piedra-200: #d7dedb;
+  --color-piedra-300: #b6c1bc;
+  --color-piedra-400: #9aa6a1;
+  --color-piedra-500: #74807b;
+  --color-piedra-600: #56615d;
+  --color-piedra-700: #3c4542;
+  --color-piedra-800: #232a28;
+  --color-piedra-850: #1a201e;
+  --color-piedra-900: #101413;
+  --color-piedra-950: #090c0b;
+
+  /* Tipografía: Plus Jakarta Sans (variable, autoalojada). Escala compacta de chat. */
+  --font-sans: 'Plus Jakarta Sans Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.1rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.9375rem;
+  --text-base--line-height: 1.45rem;
+  --text-lg: 1.0625rem;
+  --text-lg--line-height: 1.6rem;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 2rem;
+  --text-3xl: 2rem;
+  --text-3xl--line-height: 2.4rem;
+
+  /* Espaciado en pasos de 4 px; anchos de panel propios. */
+  --spacing: 0.25rem;
+  --spacing-riel: 4.5rem;
+  --spacing-lista: 23.5rem;
+
+  --radius-control: 0.75rem;
+  --radius-tarjeta: 1.25rem;
+  --radius-burbuja: 1.125rem;
+
+  --shadow-suave: 0 1px 2px rgb(9 12 11 / 0.06), 0 1px 3px rgb(9 12 11 / 0.08);
+  --shadow-flotante: 0 12px 32px -8px rgb(9 12 11 / 0.28), 0 4px 10px -4px rgb(9 12 11 / 0.12);
+
+  --animate-aparecer: aparecer 160ms ease-out;
+  --animate-punto: punto 1.2s ease-in-out infinite;
+
+  @keyframes aparecer {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes punto {
+    0%,
+    80%,
+    100% {
+      opacity: 0.25;
+      transform: translateY(0);
+    }
+    40% {
+      opacity: 1;
+      transform: translateY(-2px);
+    }
+  }
+}
+
+/* Tokens semánticos: los valores cambian según el modo. */
+@theme inline {
+  --color-fondo: var(--app-fondo);
+  --color-fondo-chat: var(--app-fondo-chat);
+  --color-superficie: var(--app-superficie);
+  --color-superficie-2: var(--app-superficie-2);
+  --color-borde: var(--app-borde);
+  --color-texto: var(--app-texto);
+  --color-tenue: var(--app-tenue);
+  --color-primario: var(--app-primario);
+  --color-primario-hover: var(--app-primario-hover);
+  --color-sobre-primario: var(--app-sobre-primario);
+  --color-primario-suave: var(--app-primario-suave);
+  --color-acento: var(--app-acento);
+  --color-sobre-acento: var(--app-sobre-acento);
+  --color-peligro: var(--app-peligro);
+  --color-peligro-suave: var(--app-peligro-suave);
+  --color-burbuja-mia: var(--app-burbuja-mia);
+  --color-sobre-burbuja-mia: var(--app-sobre-burbuja-mia);
+  --color-burbuja-mia-meta: var(--app-burbuja-mia-meta);
+  --color-burbuja-otra: var(--app-burbuja-otra);
+  --color-sobre-burbuja-otra: var(--app-sobre-burbuja-otra);
+  --color-visto: var(--app-visto);
+  --color-foco: var(--app-foco);
+  --color-en-linea: var(--app-en-linea);
+}
+
+@layer base {
+  :root {
+    --app-fondo: #f5f7f6;
+    --app-fondo-chat: #eef2f0;
+    --app-superficie: #ffffff;
+    --app-superficie-2: #eaeeec;
+    --app-borde: #d7dedb;
+    --app-texto: #16201d;
+    --app-tenue: #56615d;
+    --app-primario: #0b5f53;
+    --app-primario-hover: #0e5248;
+    --app-sobre-primario: #ffffff;
+    --app-primario-suave: #d5f3e9;
+    --app-acento: #b0287f;
+    --app-sobre-acento: #ffffff;
+    --app-peligro: #b42318;
+    --app-peligro-suave: #fdecea;
+    --app-burbuja-mia: #0b5f53;
+    --app-sobre-burbuja-mia: #ffffff;
+    --app-burbuja-mia-meta: #cdeee4;
+    --app-burbuja-otra: #ffffff;
+    --app-sobre-burbuja-otra: #16201d;
+    --app-visto: #ffd0f0;
+    --app-foco: #b0287f;
+    --app-en-linea: #1a9e85;
+    color-scheme: light;
+  }
+
+  .dark {
+    --app-fondo: #101413;
+    --app-fondo-chat: #0c100f;
+    --app-superficie: #1a201e;
+    --app-superficie-2: #232a28;
+    --app-borde: #303836;
+    --app-texto: #e8eeeb;
+    --app-tenue: #9aa6a1;
+    --app-primario: #4fd1b5;
+    --app-primario-hover: #79d2b9;
+    --app-sobre-primario: #06201b;
+    --app-primario-suave: #0b3d36;
+    --app-acento: #f07ccd;
+    --app-sobre-acento: #2a0620;
+    --app-peligro: #ff8f84;
+    --app-peligro-suave: #3a1714;
+    --app-burbuja-mia: #0e5248;
+    --app-sobre-burbuja-mia: #e9fbf5;
+    --app-burbuja-mia-meta: #a9dccd;
+    --app-burbuja-otra: #232a28;
+    --app-sobre-burbuja-otra: #e8eeeb;
+    --app-visto: #f4a0d9;
+    --app-foco: #f07ccd;
+    --app-en-linea: #4fd1b5;
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-fondo font-sans text-base text-texto antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Foco visible y consistente para teclado en todos los controles. */
+  :focus-visible {
+    outline: 2px solid var(--app-foco);
+    outline-offset: 2px;
+    border-radius: 0.375rem;
+  }
+
+  ::selection {
+    background: var(--app-primario-suave);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 1ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* Fondo del área de mensajes: retícula de puntos muy sutil. */
+  .fondo-conversacion {
+    background-color: var(--app-fondo-chat);
+    background-image: radial-gradient(color-mix(in oklab, var(--app-tenue) 14%, transparent) 1px, transparent 1px);
+    background-size: 18px 18px;
+  }
+}
