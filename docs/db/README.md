@@ -1,78 +1,80 @@
 # Base de datos de CR_Chat
 
-PostgreSQL 17 es la fuente de verdad. MySQL 8 será una réplica de solo lectura alimentada por CDC (Fase 2).
+PostgreSQL 17 es la fuente de verdad, en alta disponibilidad con Patroni (2 nodos) + etcd + HAProxy, con
+respaldos continuos y PITR (pgBackRest → MinIO). MySQL 8.4 es una réplica de **solo lectura** alimentada por CDC
+(Debezium + Kafka, profile `cdc`); ya no tiene procedimientos ni es fallback de escritura.
 
 | Documento | Contenido |
 |---|---|
+| [`infraestructura.md`](infraestructura.md) | Diagrama de contenedores, puertos, flujos, Patroni, MinIO, CDC, consumo |
+| [`recuperacion.md`](recuperacion.md) | Runbook: respaldos, retención, failover, PITR, re-sembrado de MySQL, RPO/RTO medidos |
 | [`modelo.md`](modelo.md) | Diagrama ER, normalización, `ON DELETE` e índices |
-| [`optimizacion.md`](optimizacion.md) | EXPLAIN ANALYZE de las funciones principales |
-| [`../contratos/db-funciones.md`](../contratos/db-funciones.md) | Contrato de funciones para el backend: firmas, errores y endpoints |
+| [`optimizacion.md`](optimizacion.md) | EXPLAIN ANALYZE de las funciones principales y ajustes de la Fase 2 |
+| [`../contratos/db-funciones.md`](../contratos/db-funciones.md) | Contrato de funciones para el backend: firmas, errores, conexión |
 
 ## Estructura
 
 ```
 Postgres/
-  migraciones/              # dbmate: -- migrate:up / -- migrate:down
-    001_roles_extensiones.sql   # requiere superusuario (roles de clúster + extensiones)
-    002_esquema.sql             # tablas, constraints, índices, auditoría particionada, GRANT
-    003_funciones.sql           # funciones v0 (ids bigint); las reemplaza la 005
-    004_esquema_api_v1.sql      # public_id uuid, media (MinIO), sesion por dispositivo,
-                                #   nonce/key_id/client_id/lápida en mensaje (requiere superusuario: unaccent)
-    005_funciones_api_v1.sql    # funciones de la API v1 (uuid), GRANT EXECUTE
-  bootstrap/asignar-credenciales.sql   # LOGIN + contraseñas desde variables
-  seed/demo.sql             # 3 usuarios demo (idempotente; requiere 001-005)
-  pruebas/                  # pruebas de contrato (app_rw, app_ro), catálogo, volumen, explain
-  postgres-init/            # ESQUEMA ANTERIOR (obsoleto); se retira en la Fase 2
+  migraciones/                     # dbmate: -- migrate:up / -- migrate:down
+    001_roles_extensiones.sql      # superusuario: roles (migrator, app_rw, app_ro, cdc_lector) y extensiones
+    002_esquema.sql                # tablas, constraints, índices, auditoría particionada, GRANT (como migrator)
+    003_funciones.sql              # funciones de la API v1 (uuid), GRANT EXECUTE (como migrator)
+    004_publicacion_cdc.sql        # publicación lógica crchat_cdc (sin pass_hash ni sesiones)
+  bootstrap/asignar-credenciales.sql   # LOGIN + contraseñas desde variables, REVOKE CONNECT FROM PUBLIC
+  seed/demo.sql                    # usuarios demo (idempotente)
+  pruebas/                         # contrato (app_rw, app_ro), catálogo, volumen, explain
+MysqlB/
+  conf/crchat.cnf                  # MySQL de solo lectura (512 MiB, sin binlog)
+  init/01-usuarios.sh              # crchat_sink (DDL/DML) y crchat_lectura (solo SELECT)
+  init/02-esquema.sql              # esquema destino del CDC
+infra/
+  patroni/                         # Dockerfile (targets patroni y backup), patroni.yml, pgbackrest.conf, entrypoint, bootstrap PITR
+  backup/                          # pgbackrest.conf del repo host, crontab, jobs/ejecutar.sh, entrypoint
+  certs/generar.sh                 # CA interna y certificados (TLS de pgBackRest y del endpoint S3)
+  haproxy/haproxy.cfg              # 5000 escritura, 5001 lectura, 9443 TLS S3, 7000 stats
+  minio/                           # init.sh y políticas de los buckets
+  cdc/                             # conectores Debezium, init.sh, resembrar.sh, desactivar.sh
+  scripts/                         # probar-failover.sh, probar-restauracion.sh, restaurar-cluster.sh
 ```
+
+### Historial de migraciones (decisión de la Fase 2)
+
+Las antiguas 002+004 (esquema) y 003+005 (funciones) se **consolidaron** en 002 y 003: nada se había desplegado,
+la 005 duplicaba en su `migrate:down` ~800 líneas de la 003, y la 004 tenía un `down` con pérdida. Validación:
+el `pg_dump -s` tras 001-003 consolidadas es **idéntico** al de 001-005 originales (incluidos GRANT y orden de
+columnas), las 190 pruebas pasaron igual, y `dbmate rollback` ×4 deja la base vacía (solo `schema_migrations`).
+`unaccent` pasó a la 001, así que solo la 001 requiere superusuario. Después se agregaron, a pedido del backend,
+`fn_crear_contacto_usuario` y la columna `contacto_alias` en las conversaciones (213 pruebas).
 
 ## Roles
 
 | Rol | Uso | Atributos |
 |---|---|---|
-| `migrator` | Es dueño de todos los objetos. dbmate lo usa a partir de la 002. | `NOLOGIN` en la migración. Sin SUPERUSER/CREATEROLE/CREATEDB. |
-| `app_rw` | API por `haproxy:5000`. | `NOLOGIN` en la migración. `statement_timeout=5s`. Solo EXECUTE más el DML mínimo. |
-| `app_ro` | API (lecturas) por `haproxy:5001`. | `NOLOGIN` en la migración. `default_transaction_read_only=on`. No ve `pass_hash`. |
+| `migrator` | Dueño de todos los objetos y de la publicación; jobs de mantenimiento. | `NOLOGIN` en la 001. Sin SUPERUSER/CREATEROLE/CREATEDB; `CREATE` sobre la base (publicación). |
+| `app_rw` | API por `haproxy:5000`. | `statement_timeout=5s`. Solo EXECUTE más el DML mínimo. |
+| `app_ro` | API (lecturas) por `haproxy:5001`. | `default_transaction_read_only=on`. No ve `pass_hash`. |
+| `cdc_lector` | Debezium (profile `cdc`). | `REPLICATION` sin superusuario; SELECT solo de lo publicado (sin `pass_hash`). |
 
-**El repositorio no contiene contraseñas.** Al desplegar, un superusuario ejecuta:
+**El repositorio no contiene contraseñas.** El servicio `db-init` aplica `asignar-credenciales.sql` con las
+variables del `.env` raíz (`DB_MIGRATOR_PASSWORD`, `DB_APP_RW_PASSWORD`, `DB_APP_RO_PASSWORD`, `DB_CDC_PASSWORD`;
+esta última opcional: vacía = `cdc_lector` sin LOGIN). Ver [`.env.example`](../../.env.example).
 
-```bash
-psql "$SUPERUSER_URL" -v ON_ERROR_STOP=1 \
-  -v migrator_password="$DB_MIGRATOR_PASSWORD" \
-  -v app_rw_password="$DB_APP_RW_PASSWORD" \
-  -v app_ro_password="$DB_APP_RO_PASSWORD" \
-  -f Postgres/bootstrap/asignar-credenciales.sql
-```
-
-Las variables `DB_*_PASSWORD` vienen del `.env` local (ignorado por git) o de los secrets del orquestador. El
-`.env.example` documenta los nombres sin valores. El rol `Clients` del esquema anterior, que tenía la contraseña en el repo,
-desaparece: hay que **rotar o eliminar** esa credencial en cualquier entorno donde se haya creado.
-
-## Aplicar desde cero
+## Arranque
 
 ```bash
-# 1) Migraciones. La primera vez (contiene 001 y 004, que crean extensiones) se ejecutan con el
-#    superusuario de la imagen; ninguna tabla queda con dueño postgres porque 002+ hacen SET LOCAL ROLE migrator.
-docker run --rm --network <red> -v "$PWD/Postgres/migraciones:/db/migrations:ro" \
-  -e DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@<host>:5432/cr_chat?sslmode=disable" \
-  ghcr.io/amacneil/dbmate:2 --no-dump-schema --wait up
-
-# 2) Credenciales (ver arriba). 3) Seed de demo:
-psql "$SUPERUSER_URL" -f Postgres/seed/demo.sql
-
-# Migraciones posteriores, ya como migrator:
-#   DATABASE_URL=postgres://migrator:${DB_MIGRATOR_PASSWORD}@haproxy:5000/cr_chat
+cp .env.example .env                                   # completar los secretos
+docker compose up -d --wait haproxy backup             # HA + migraciones (dbmate) + credenciales + respaldos
+docker compose --profile demo up db-seed               # usuarios de demo (opcional)
+docker compose --profile cdc up -d --wait mysql kafka connect && docker compose --profile cdc up cdc-init
 ```
 
-Revertir todo: `dbmate rollback`, una vez por migración (005 → 004 → 003 → 002 → 001). La 005 restaura las
-funciones de la 003 (copia literal en su `migrate:down`) y la 004 restaura el esquema de la 002 **con pérdida**:
-las lápidas reciben un contenido de relleno, los contactos sin alias toman el nombre del usuario y se pierden
-media, sesiones y `public_id`. Comprobado: el `pg_dump -s` tras `up` + 2 `rollback` es idéntico al de 001-003
-salvo el orden de las columnas re-agregadas (`foto_perfil`, `media_url`). La 001 hace `DROP OWNED` y `DROP ROLE`
-de los tres roles. Falla, a propósito, si alguno tiene privilegios en otra base del clúster.
+Migraciones nuevas: agregar `Postgres/migraciones/NNN_descripcion.sql` y `docker compose up dbmate`.
+Conexión manual: `psql -h 127.0.0.1 -p 5000 -U app_rw -d cr_chat` (puertos publicados solo en `127.0.0.1`).
 
 ## Usuarios de demo
 
-**Solo para desarrollo y demo.** Los hashes argon2id del seed se generaron con PHP 8.4.27
+**Solo para desarrollo y demo.** Se cargan con `docker compose --profile demo up db-seed`. Los hashes argon2id del seed se generaron con PHP 8.4.27
 (`password_hash(..., PASSWORD_ARGON2ID)`, m=65536, t=4, p=1).
 
 | Usuario | Teléfono | Email | Contraseña |
@@ -94,22 +96,25 @@ Datos que crea el seed:
 ## Pruebas
 
 ```bash
-psql -U app_rw -d cr_chat -f Postgres/pruebas/funciones_app_rw.sql   # 170 casos: login, registro, perfil público, contactos,
-                                                                      # bloqueos, conversaciones, mensajes, recibos, media,
-                                                                      # sesiones, presencia, baja, IDOR por public_id, privilegios
-psql -U app_ro -d cr_chat -f Postgres/pruebas/funciones_app_ro.sql   # 20 casos: 12 funciones de lectura, sin pass_hash/sesiones/escritura
-psql -U postgres -d cr_chat -f Postgres/pruebas/catalogo.sql         # SECURITY DEFINER, PUBLIC, FK sin índice, roles,
-                                                                      # public_id en recursos, ningún id bigint en la API
+# contra el clúster (el cliente corre en la red de compose):
+psql -h haproxy -p 5000 -U app_rw -d cr_chat -f Postgres/pruebas/funciones_app_rw.sql  # 191 casos (líder)
+psql -h haproxy -p 5001 -U app_ro -d cr_chat -f Postgres/pruebas/funciones_app_ro.sql  # 22 casos, EN LA RÉPLICA:
+                                                                                       # sin objetos temporales
+psql -h haproxy -p 5000 -U postgres -d cr_chat -f Postgres/pruebas/catalogo.sql        # 9 chequeos (el 7 devuelve
+                                                                                       # solo mensaje_media_fk)
+infra/scripts/probar-failover.sh && infra/scripts/probar-restauracion.sh
 ```
 
-Las pruebas dejan datos, así que solo se ejecutan en bases desechables.
+Las pruebas de funciones dejan datos: solo en bases desechables.
 
 ## Notas operativas
 
-- `fn_purgar_sesiones()` (solo `migrator`) borra sesiones revocadas o expiradas hace más de 30 días; programarla a diario (Fase 2).
-- El job de huérfanos de media lo ejecuta la API (`app_rw`), porque además de la fila borra el objeto en MinIO.
-- `pg_stat_statements` se crea en la 001, pero solo recolecta datos con `shared_preload_libraries` (Fase 2, Patroni).
-- `auditoria` tiene particiones mensuales desde el mes anterior hasta 3 meses adelante, más `auditoria_default`. Hay que ejecutar
-  `SELECT fn_crear_particiones_auditoria(3);` cada mes como `migrator`. Si llegan filas a `auditoria_default` de un mes
-  que luego se quiere particionar, primero hay que moverlas.
-- Recomendación para la Fase 2: `REVOKE CONNECT ON DATABASE cr_chat FROM PUBLIC` y, en `pg_hba.conf`, `scram-sha-256` solo desde la red interna.
+- Jobs (cron del contenedor `backup`, como `migrator`): `fn_purgar_sesiones()` diario y
+  `fn_crear_particiones_auditoria(3)` mensual. Si llegan filas a `auditoria_default` de un mes que luego se
+  quiere particionar, primero hay que moverlas.
+- El job de huérfanos de media lo ejecuta la API (`app_rw`, servicio `ws`), porque además borra el objeto en MinIO.
+- `pg_stat_statements` y `auto_explain` están activos (`shared_preload_libraries` en Patroni).
+- `REVOKE CONNECT ON DATABASE cr_chat, postgres FROM PUBLIC` (db-init) y `pg_hba` con `scram-sha-256` solo desde la
+  red de Docker (`samenet`); todo lo demás `reject`.
+- El rol `Clients` del esquema anterior (con contraseña en el repo) desaparece: **rotar o eliminar** esa credencial
+  donde se haya creado.

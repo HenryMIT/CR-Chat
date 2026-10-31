@@ -1,9 +1,10 @@
 # Contrato de funciones de base de datos (PostgreSQL 17) — v1
 
-Fuente: `Postgres/migraciones/005_funciones_api_v1.sql` (esquema en `002` + `004`).
+Fuente: `Postgres/migraciones/003_funciones.sql` (esquema en `002`, publicación CDC en `004`).
 Modelo: [`docs/db/modelo.md`](../db/modelo.md). API: [`openapi.yaml`](openapi.yaml), [`ws-eventos.md`](ws-eventos.md).
-Estado: **Fase 1b** (contrato cerrado con la API v1). Las funciones de la `003` (ids `bigint`) quedan
-reemplazadas por la `005`; no se deben usar.
+Estado: **Fase 2** (contrato v1 + pedidos del backend: `fn_crear_contacto_usuario` y `contacto_alias` en
+conversaciones). Las migraciones se consolidaron (001 roles/extensiones, 002 esquema, 003 funciones, 004
+publicación CDC); las firmas finales no cambiaron. Infraestructura: [`docs/db/infraestructura.md`](../db/infraestructura.md).
 
 ## 1. Conexión esperada
 
@@ -11,7 +12,8 @@ reemplazadas por la `005`; no se deben usar.
 |---|---|---|---|
 | Escritura, autenticación, sesiones, job de media | `haproxy:5000` (líder Patroni) | `app_rw` | Todas las funciones. `statement_timeout=5s`. |
 | Lectura | `haproxy:5001` (réplicas) | `app_ro` | Solo las funciones de la tabla 3.10. Sesiones en `default_transaction_read_only`. |
-| Migraciones | `haproxy:5000` | superusuario para 001 y 004 (extensiones); `migrator` el resto | dbmate, `Postgres/migraciones/`. |
+| Migraciones | `haproxy:5000` | superusuario solo para la 001 (roles y extensiones); 002-004 hacen `SET LOCAL ROLE migrator` | Servicio `dbmate` de un solo uso (compose). |
+| Mantenimiento | `haproxy:5000` | `migrator` | Cron del contenedor `backup`: `fn_purgar_sesiones()` diario 03:00, `fn_crear_particiones_auditoria(3)` el día 1 a las 03:15. |
 
 Variables para `.env.example` (los valores nunca van al repo):
 
@@ -19,8 +21,15 @@ Variables para `.env.example` (los valores nunca van al repo):
 DB_NAME=cr_chat
 DB_RW_HOST=haproxy   DB_RW_PORT=5000  DB_RW_USER=app_rw  DB_RW_PASSWORD=
 DB_RO_HOST=haproxy   DB_RO_PORT=5001  DB_RO_USER=app_ro  DB_RO_PASSWORD=
+MINIO_ENDPOINT=http://minio:9000          # red interna
+MINIO_PUBLIC_ENDPOINT=http://localhost:9000 # URLs prefirmadas para el navegador (CORS: MINIO_CORS_ORIGIN)
 MINIO_BUCKET=cr-chat-media        # se pasa a fn_registrar_media (p_bucket)
+MINIO_ACCESS_KEY=   MINIO_SECRET_KEY=   # = MINIO_API_ACCESS_KEY / MINIO_API_SECRET_KEY del .env raíz
 ```
+
+Las contraseñas de `datos/.env` deben coincidir con las del `.env` raíz que usa `db-init`:
+`DB_RW_PASSWORD` = `DB_APP_RW_PASSWORD`, `DB_RO_PASSWORD` = `DB_APP_RO_PASSWORD`. El usuario de MinIO de la API solo
+tiene acceso al bucket `cr-chat-media` (política `cr-chat-media-rw`); el bucket de respaldos es `cr-chat-backups`.
 
 DSN PDO: `pgsql:host=haproxy;port=5000;dbname=cr_chat;application_name=cr_chat_api`.
 
@@ -127,6 +136,7 @@ ese usuario me bloqueó.
 | Firma | API | Notas / errores |
 |---|---|---|
 | `fn_crear_contacto(p_usuario uuid, p_telefono text, p_alias text = NULL) → TABLE(<columnas>, creado bool)` | `POST /contacts` | Idempotente: existente → `creado=false` (200, alias sin cambios); nuevo o reactivado → `creado=true` (201). No registrado, uno mismo o **el destino me bloqueó** → el mismo `CR404`. `CR422 alias`. |
+| `fn_crear_contacto_usuario(p_usuario uuid, p_objetivo uuid, p_alias text = NULL) → TABLE(<columnas>, creado bool)` | `POST /contacts {user_id}` | Mismo resultado e idempotencia que `fn_crear_contacto`, pero por `public_id`. Exige **relación previa**: conversación compartida, o el objetivo me tiene en su agenda (contacto inverso), o yo ya lo tengo (idempotente). **Sin bloqueo en ningún sentido.** Inexistente, inactivo, uno mismo, sin relación o con bloqueo → el mismo `CR404` (no permite enumerar usuarios por uuid). `CR422 alias`. Solo `app_rw`. |
 | `fn_obtener_contacto(p_usuario uuid, p_contacto uuid) → TABLE(<columnas>)` | `GET /contacts/{id}` | Ajeno, borrado o de usuario inactivo → `CR404`. |
 | `fn_listar_contactos(p_usuario uuid, p_busqueda text = NULL, p_limite int = 50, p_cursor_orden text = NULL, p_cursor_id uuid = NULL) → TABLE(<columnas>)` | `GET /contacts?q=&cursor=&limit=` | Orden `(orden COLLATE "C", id)`; `orden` = alias o nombre en minúsculas y sin acentos. `q` (≤ 50): subcadena en alias o nombre sin acentos/mayúsculas, o prefijo del teléfono con o sin `+`; comodines escapados. Cursor = `orden` + `id` de la última fila (p. ej. `base64url(json)`). `CR422 cursor/q`. |
 | `fn_actualizar_contacto(p_usuario uuid, p_contacto uuid, p_alias text) → TABLE(<columnas>)` | `PATCH /contacts/{id}` | Solo alias; NULL vuelve al nombre. `CR404`, `CR422 alias`. |
@@ -142,16 +152,20 @@ ese usuario me bloqueó.
 
 Efectos del bloqueo (en cualquier sentido): `CR403 bloqueado` al enviar, editar o crear conversación; `CR404` en
 perfil público; excluido de presencia; avatar oculto **para el bloqueado**; `fn_crear_contacto` → `CR404` si el
-destino me bloqueó.
+destino me bloqueó; `fn_crear_contacto_usuario` → `CR404` con bloqueo en cualquier sentido.
 
 ### 3.5 Conversaciones (schema `Conversation`)
 
 Columnas comunes: `id uuid, id_peer uuid, peer_nombre text, peer_avatar jsonb, peer_activo bool, id_contacto uuid,
 es_contacto bool, bloqueado bool, no_leidos int, created_at, ultimo_mensaje_at` y el último mensaje
 (`last_message`, NULL si no hay): `ult_id uuid, ult_id_remitente uuid, ult_client_id uuid, ult_contenido bytea,
-ult_nonce bytea, ult_key_id smallint, ult_media jsonb, ult_created_at, ult_editado_at, ult_deleted_at, ult_estado text`.
+ult_nonce bytea, ult_key_id smallint, ult_media jsonb, ult_created_at, ult_editado_at, ult_deleted_at, ult_estado text`
+y al final `contacto_alias text`.
 
 - `es_contacto=false` → solicitud de mensaje (U-06). `bloqueado` = yo bloqueé al otro.
+- `contacto_alias` = alias que **quien consulta** le puso al otro en su agenda (`contact_alias` de la API). NULL si
+  no lo tiene agendado (activo) o si su contacto no tiene alias; la UI muestra entonces `peer_nombre`. En
+  `fn_crear_conversacion` va antes de `creada`.
 - `no_leidos` (`unread_count`) tiene **tope 100** ("99+"); excluye mensajes borrados.
 - `last_message` puede ser una lápida (`ult_deleted_at` no NULL, contenido NULL). `ult_estado` (`sent|delivered|seen`) y
   `ult_client_id` solo en mensajes propios.
@@ -213,8 +227,8 @@ tamaño/MIME reales con los registrados → `fn_actualizar_usuario` / `fn_enviar
 |---|---|---|
 | Lectura: `fn_leer_perfil`, `fn_perfil_publico`, `fn_obtener_contacto`, `fn_listar_contactos`, `fn_listar_bloqueos`, `fn_obtener_conversacion`, `fn_listar_conversaciones`, `fn_participantes_conversacion`, `fn_listar_mensajes`, `fn_obtener_media`, `fn_filtrar_relacionados`, `fn_listar_relacionados` | sí | sí |
 | Escritura, autenticación, sesiones (incluidas `fn_listar_sesiones` y `fn_tocar_sesion`), recibos, media, `fn_registrar_last_seen` | sí | — |
-| Mantenimiento: `fn_crear_particiones_auditoria`, `fn_purgar_sesiones(p_antiguedad interval = '30 days')` | — | — (solo `migrator`, cron en Fase 2) |
-| Auxiliares `fn__*`, `fn_normalizar` | sí | sí (salvo `fn__revocar_sesiones`: solo rw) |
+| Mantenimiento: `fn_crear_particiones_auditoria`, `fn_purgar_sesiones(p_antiguedad interval = '30 days')` | — | — (solo `migrator`; cron del contenedor `backup`) |
+| Auxiliares `fn__*`, `fn_normalizar` | sí | sí (salvo `fn__revocar_sesiones` y `fn__agendar`: solo rw) |
 
 ## 4. Permisos sobre tablas
 
@@ -233,9 +247,9 @@ Como las funciones son `SECURITY INVOKER`, `app_rw` tiene DML directo sobre las 
 funciones**: la revisión de código del backend debe rechazar SQL directo. Mejora futura: Row Level Security con
 `SET app.user_id`.
 
-## 5. Cambios respecto a la versión de la 003
+## 5. Cambios respecto a la versión v0 (funciones con ids `bigint`, ya retiradas del historial)
 
-| Antes (003) | Ahora (005) |
+| Antes (v0) | Ahora (v1) |
 |---|---|
 | `p_id_usuario bigint` e ids `bigint` | `p_usuario uuid` (sub del JWT) e ids `public_id uuid` |
 | `fn_crear_contacto` → `bigint`, `CR409` si existía, `CR422` a uno mismo | Idempotente `(<contacto>, creado)`, mismo `CR404` para no registrado / uno mismo / me bloqueó |

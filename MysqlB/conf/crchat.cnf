@@ -1,0 +1,19 @@
+# =============================================================================
+# MySQL 8.4 de CR_Chat: réplica de SOLO LECTURA alimentada por CDC (Debezium
+# JDBC sink). Ajustado a un contenedor de 512 MiB.
+# =============================================================================
+[mysqld]
+character-set-server = utf8mb4
+collation-server     = utf8mb4_0900_ai_ci
+default-time-zone    = '+00:00'
+skip-name-resolve
+max_connections      = 40
+innodb_buffer_pool_size = 128M
+innodb_log_buffer_size  = 8M
+innodb_redo_log_capacity = 268435456
+performance_schema   = OFF
+# Es una réplica reconstruible desde PostgreSQL: sin binlog (ahorra disco).
+skip-log-bin
+# El sink escribe filas de hasta 64 KiB de contenido cifrado.
+max_allowed_packet   = 64M
+local_infile         = OFF
