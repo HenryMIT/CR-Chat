@@ -1,39 +1,40 @@
 <?php
-    $container->set('config_bd', function(){
-        return(object)[
-            "primary" => $_ENV["db_primary"] ?? 'mysql',
-            "hostPG" => $_ENV["hostPG"],
-            "portPG" => $_ENV["portPG"],
-            "hostMYSQL" => $_ENV["hostMYSQL"],
-            "portMYSQL" => $_ENV["portMYSQL"],
-            "db" => $_ENV["db"],
-            "usrPG" => $_ENV["usrPG"],
-            "usrMYSQL" => $_ENV["usrMYSQL"],
-            "passPG" => $_ENV["passPG"],
-            "passMYSQL" => $_ENV["passMYSQL"]
-        ];
-    });
 
-    $container->set('key', function(){
-        return $_ENV['key'];
-    });
+use App\Services\EventPublisher;
+use App\Services\MessageCrypto;
+use App\Services\ObjectStorage;
+use App\Services\Presenter;
+use App\Services\RateLimiter;
+use App\Services\RedisConn;
+use App\Services\SessionGuard;
+use App\Services\TokenService;
+use App\Support\Config;
+use Psr\Container\ContainerInterface;
 
-    $container->set('key_decript', function(){
-        return $_ENV['key_decryption'];
-    });
+/** @var DI\Container $container */
 
-    // Duración de los tokens en segundos
-    $container->set('jwt_ttl', function(){
-        return [
-            'access' => (int) ($_ENV['jwt_access_ttl'] ?? 900),
-            'refresh' => (int) ($_ENV['jwt_refresh_ttl'] ?? 604800)
-        ];
-    });
+// Configuración tipada (falla al arrancar si falta un secreto o es inseguro)
+$container->set(Config::class, fn() => new Config());
 
-    $container->set('cors_origin', function(){
-        return $_ENV['cors_origin'] ?? '*';
-    });
+$container->set('debug', fn(ContainerInterface $c) => $c->get(Config::class)->debug);
+$container->set('cors_origins', fn(ContainerInterface $c) => $c->get(Config::class)->corsOrigins);
 
-    $container->set('debug', function(){
-        return filter_var($_ENV['app_debug'] ?? false, FILTER_VALIDATE_BOOLEAN);
-    });
+$container->set(RedisConn::class, fn(ContainerInterface $c) => new RedisConn($c->get(Config::class)));
+$container->set(RateLimiter::class, fn(ContainerInterface $c) => new RateLimiter(
+    $c->get(RedisConn::class),
+    $c->get(Config::class)->rateLimitEnabled
+));
+$container->set(TokenService::class, fn(ContainerInterface $c) => new TokenService($c->get(Config::class)));
+$container->set(MessageCrypto::class, fn(ContainerInterface $c) => new MessageCrypto($c->get(Config::class)));
+$container->set(ObjectStorage::class, fn(ContainerInterface $c) => new ObjectStorage($c->get(Config::class)));
+$container->set(EventPublisher::class, fn(ContainerInterface $c) => new EventPublisher($c->get(RedisConn::class)));
+$container->set(Presenter::class, fn(ContainerInterface $c) => new Presenter(
+    $c->get(ObjectStorage::class),
+    $c->get(MessageCrypto::class),
+    $c->get(Config::class)
+));
+$container->set(SessionGuard::class, fn(ContainerInterface $c) => new SessionGuard(
+    $c->get(App\Services\Db::class),
+    $c->get(RedisConn::class),
+    $c->get(Config::class)
+));

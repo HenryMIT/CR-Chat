@@ -2,20 +2,23 @@
 
 namespace App\Middleware;
 
-use Firebase\JWT\JWT;
-use Firebase\JWT\Key;
+use App\Exceptions\InvalidTokenException;
+use App\Services\SessionGuard;
+use App\Services\TokenService;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface as Handler;
 use Slim\Exception\HttpUnauthorizedException;
-use Throwable;
 
-// Valida el access token (Authorization: Bearer <jwt>) y expone el id del usuario
-// autenticado en el atributo "id_usr" del request.
+/**
+ * Valida el access token (Authorization: Bearer <jwt>): firma, alg, iss, aud, typ, exp, y además
+ * que la sesión `sid` siga activa (SessionGuard: Redis con respaldo en BD). Expone en el request
+ * los atributos `user_id` (uuid público = sub) y `session_id` (sid).
+ */
 class JwtMiddleware implements MiddlewareInterface
 {
-    public function __construct(private string $key)
+    public function __construct(private TokenService $tokens, private SessionGuard $sessions)
     {
     }
 
@@ -27,15 +30,18 @@ class JwtMiddleware implements MiddlewareInterface
         }
 
         try {
-            $payload = JWT::decode($matches[1], new Key($this->key, 'HS256'));
-        } catch (Throwable) {
-            throw new HttpUnauthorizedException($request, 'Token de acceso inválido o expirado.');
+            $claims = $this->tokens->verifyAccess($matches[1]);
+        } catch (InvalidTokenException $e) {
+            throw new HttpUnauthorizedException($request, $e->getMessage());
         }
 
-        if (($payload->typ ?? null) !== 'access' || empty($payload->sub)) {
-            throw new HttpUnauthorizedException($request, 'Token de acceso inválido.');
+        if (!$this->sessions->isActive($claims->sub, $claims->sid)) {
+            throw new HttpUnauthorizedException($request, 'La sesión fue cerrada o revocada.');
         }
 
-        return $handler->handle($request->withAttribute('id_usr', (int) $payload->sub));
+        return $handler->handle($request
+            ->withAttribute('user_id', strtolower($claims->sub))
+            ->withAttribute('session_id', strtolower($claims->sid))
+            ->withAttribute('token_exp', (int) $claims->exp));
     }
 }

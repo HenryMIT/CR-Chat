@@ -11,29 +11,44 @@ info:
     - **Formato**: JSON UTF-8 (`application/json`). Los errores usan **RFC 9457**
       (`application/problem+json`) con los campos `type`, `title`, `status`, `detail`,
       `instance` y, en errores de validación, `errors[]`.
-    - **Identificadores**: todos los ids públicos son **UUID** opacos (no secuenciales).
-      Los ids internos de la BD nunca se exponen.
+    - **Identificadores**: todos los ids públicos son **UUID** opacos (no secuenciales). La BD
+      genera UUID v4 (`gen_random_uuid`), pero el cliente no debe asumir ninguna versión. Los ids
+      internos de la BD nunca se exponen. Un id de ruta con formato inválido responde **404**.
     - **Fechas**: RFC 3339 en UTC (`2026-10-29T14:03:12.123Z`).
     - **Paginación**: por **cursor opaco** (`cursor` + `limit`). La respuesta trae
       `next_cursor` (null si no hay más). Nunca se usa OFFSET.
     - **Propiedad**: un recurso ajeno (contacto, conversación o mensaje de la que el usuario no
       es dueño/participante) responde **404**, igual que uno inexistente, para no filtrar existencia.
     - **Autenticación**: `Authorization: Bearer <access_token>` (JWT HS256 de 15 min, claims
-      `iss`, `aud`, `sub`, `sid`, `jti`, `iat`, `exp`, `typ=access`; **sin** teléfono ni email).
+      `iss=cr-chat-api`, `aud=cr-chat`, `sub`, `sid`, `jti`, `iat`, `exp`, `typ=access`; **sin**
+      teléfono ni email; clave propia `JWT_ACCESS_KEY`; 30 s de margen de reloj).
       En cada petición se comprueba que la sesión `sid` siga activa y que el usuario no esté
       desactivado (caché en Redis), de modo que logout, revocación de sesión, cambio de
       contraseña o borrado de cuenta invalidan el access token de inmediato.
     - **Refresh token**: cadena opaca de alta entropía (no JWT), una por sesión/dispositivo,
       rotada en cada uso. En la BD solo se guarda su hash SHA-256 y su `jti`. Reutilizar un
-      refresh ya rotado revoca la sesión completa (detección de robo).
-    - **Rate limiting**: todas las respuestas incluyen `RateLimit-Policy` y `RateLimit`
-      (draft-ietf-httpapi-ratelimit-headers). Al exceder un límite se responde **429** con
-      `Retry-After` (segundos). Límites concretos en `docs/requerimientos-api.md`.
+      refresh ya rotado revoca la sesión completa (detección de robo). **El cliente debe serializar
+      el refresh**: dos `POST /auth/refresh` simultáneos con el mismo token se interpretan como
+      reutilización y revocan la sesión.
+    - **Refresh en cookie (cliente web, A-15)**: si el login o el refresh se envían con el
+      encabezado `X-Refresh-Cookie: 1`, el refresh no viaja en el cuerpo sino en la cookie
+      `cr_refresh` (`HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth`). CSRF: `SameSite=Strict`,
+      el encabezado propio obliga a un preflight CORS y el `Origin` debe estar en la lista blanca
+      (`Access-Control-Allow-Credentials: true` solo para esos orígenes). Los clientes que no son
+      navegador siguen usando `refresh_token` en el cuerpo.
+    - **Rate limiting**: las respuestas de rutas con límite (todas salvo `/health` y `/ready`)
+      incluyen `RateLimit-Policy` y `RateLimit` (draft-ietf-httpapi-ratelimit-headers), también
+      en las de error. Al exceder un límite se responde **429** con `Retry-After` (segundos).
+      Límites concretos en `docs/requerimientos-api.md` §6.
+    - **Errores**: 400 = cuerpo no JSON, campo desconocido, cursor o parámetro de consulta
+      inválido; 422 = campo obligatorio ausente o valor inválido (con `errors[]`).
     - **Idempotencia**: `POST /conversations/{conversationId}/messages` acepta
       `Idempotency-Key` (o `client_id` en el cuerpo) para que los reintentos no dupliquen mensajes.
+      La unicidad de `client_id` por emisor es permanente.
     - **Tiempo real**: los eventos (mensajes nuevos, recibos, typing, presencia) se entregan por
       WebSocket (`ws://host:8080/ws`); ver `docs/contratos/ws-eventos.md`.
-    - **Documentación interactiva**: Swagger UI en `/docs` y este archivo en `/docs/openapi.yaml`.
+    - **Documentación interactiva**: Swagger UI en `/docs` y este archivo en `/docs/openapi.yaml`
+      (fuera de `/api/v1`; Swagger UI se sirve desde la imagen, sin CDN).
   license:
     name: MIT
     identifier: MIT
@@ -80,10 +95,11 @@ paths:
       operationId: register
       summary: Registrar un usuario
       description: |
-        Crea una cuenta. El identificador de inicio de sesión es **solo el email** (citext,
-        comparación sin mayúsculas); el teléfono se valida en formato E.164 y nunca se usa para
-        autenticar (corrige el robo de cuenta por `phone_number` igual al email de otra persona).
-        La contraseña se guarda con argon2id calculado en PHP.
+        Crea una cuenta. Se puede iniciar sesión con el email (citext) **o** con el teléfono. El
+        teléfono se valida en E.164 estricto (`^\+[1-9][0-9]{7,14}$`) en PHP y con un `CHECK` en la
+        BD, de modo que nunca puede tener forma de email: así se cierra el robo de cuenta por un
+        `phone_number` igual al email de otra persona. La contraseña se guarda con argon2id
+        calculado en PHP.
 
         Si el email **o** el teléfono ya existen se responde siempre el mismo 409 genérico, sin
         indicar qué campo colisiona (mitiga la enumeración junto con el rate limit de 3/hora por IP).
@@ -130,33 +146,47 @@ paths:
       operationId: login
       summary: Iniciar sesión (crea una sesión de dispositivo)
       description: |
-        Verifica email + contraseña (argon2id con `password_verify` en PHP). Cada login crea una
-        **sesión nueva** con su propio refresh token; las demás sesiones no se tocan.
+        `identifier` es un email (si contiene `@`) o un teléfono E.164. Una sola consulta a la BD
+        (`fn_credenciales_login`) devuelve el hash, que se verifica en PHP con `password_verify`
+        (argon2id). Cada login crea una **sesión nueva** (dispositivo) con su propio refresh token;
+        las demás sesiones no se tocan. `device_name` es opcional: si falta se deriva del User-Agent.
         Credenciales incorrectas, usuario inexistente y cuenta desactivada responden el mismo 401
-        (tiempo de respuesta constante: se verifica contra un hash ficticio si el email no existe).
+        (tiempo constante: se verifica contra un hash ficticio si el identificador no existe).
         Si el hash usa parámetros antiguos se re-hashea (`password_needs_rehash`).
+        Límites: 5/min y 20/hora por IP + identificador, 50/hora por IP, y bloqueo progresivo
+        (1, 5, 15 min) tras 10 fallos seguidos del mismo identificador.
       security: []
+      parameters:
+        - $ref: '#/components/parameters/RefreshCookieMode'
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/LoginRequest' }
             examples:
-              ejemplo:
+              email:
                 value:
-                  email: ana@example.com
+                  identifier: ana@example.com
                   password: 'correcto-caballo-bateria'
                   device_name: Firefox en Linux
+              telefono:
+                value:
+                  identifier: '+50688880001'
+                  password: 'correcto-caballo-bateria'
       responses:
         '200':
-          description: Sesión creada.
+          description: |
+            Sesión creada. Con `X-Refresh-Cookie: 1` la respuesta no trae `refresh_token`
+            y lo envía en `Set-Cookie: cr_refresh=...; HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth`.
           headers:
             Cache-Control: { $ref: '#/components/headers/NoStore' }
+            Set-Cookie: { $ref: '#/components/headers/RefreshCookie' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TokenPair' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /auth/refresh:
@@ -165,13 +195,21 @@ paths:
       operationId: refreshToken
       summary: Renovar el access token (rota el refresh)
       description: |
-        Intercambia un refresh token válido por un par nuevo. El refresh usado queda invalidado.
-        Si se presenta un refresh **ya rotado**, se revoca la sesión entera y se responde 401
-        (posible robo). Tras renovar, el cliente debe enviar `auth` con el nuevo token por el
-        WebSocket abierto (ver `ws-eventos.md`).
+        Intercambia un refresh token válido por un par nuevo (misma `session_id`). El refresh usado
+        queda invalidado. Si se presenta un refresh **ya rotado**, se revoca la sesión entera, se
+        cierran sus WebSocket y se responde 401 (posible robo). **El cliente debe serializar el
+        refresh** (una sola petición en vuelo): dos refresh simultáneos con el mismo token disparan
+        la detección de reutilización. Tras renovar, el cliente debe enviar `auth` con el nuevo
+        token por el WebSocket abierto (ver `ws-eventos.md`).
+
+        Modo cookie (cliente web): enviar `X-Refresh-Cookie: 1` **sin** cuerpo (o sin
+        `refresh_token`); el token se toma de la cookie `cr_refresh`. Un `Origin` fuera de la lista
+        blanca responde 403. Límites: 30/min por IP y, para tokens inválidos, 60/hora por IP.
       security: []
+      parameters:
+        - $ref: '#/components/parameters/RefreshCookieMode'
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema: { $ref: '#/components/schemas/RefreshRequest' }
@@ -180,11 +218,18 @@ paths:
           description: Par de tokens nuevo.
           headers:
             Cache-Control: { $ref: '#/components/headers/NoStore' }
+            Set-Cookie: { $ref: '#/components/headers/RefreshCookie' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TokenPair' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Modo cookie desde un `Origin` no permitido.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /auth/logout:
@@ -195,7 +240,8 @@ paths:
       description: |
         Revoca la sesión `sid` del access token: su refresh deja de valer y el access token es
         rechazado desde ese momento (lista de sesiones activas en Redis). Cierra también los
-        WebSocket de esa sesión. Las sesiones de otros dispositivos siguen activas.
+        WebSocket de esa sesión (cierre `4401 session_revoked`) y borra la cookie `cr_refresh`.
+        Las sesiones de otros dispositivos siguen activas.
       responses:
         '204': { description: 'Sesión cerrada.' }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -210,6 +256,7 @@ paths:
         Pública porque el usuario desactivado no puede iniciar sesión. Responde el mismo 401
         genérico si las credenciales son incorrectas o si la cuenta no está desactivada.
         Solo se puede reactivar dentro del plazo de gracia (30 días) antes del borrado definitivo.
+        Mismo cuerpo que el login (`device_name` se ignora); no crea sesión.
       security: []
       requestBody:
         required: true
@@ -220,6 +267,7 @@ paths:
         '204': { description: 'Cuenta reactivada; el cliente debe iniciar sesión.' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   # ------------------------------------------------------------------ ME
@@ -244,7 +292,8 @@ paths:
         Solo datos no sensibles (`display_name`, `about`, `avatar_media_id`). La contraseña y el
         teléfono tienen endpoints propios que exigen la contraseña actual. El avatar se referencia
         por `media_id` obtenido de `/uploads` (nunca una URL libre: evita `javascript:` y SSRF).
-        Enviar `avatar_media_id: null` quita el avatar.
+        Enviar `avatar_media_id: null` quita el avatar; `about: null` (o `""`) quita la descripción.
+        El avatar debe venir de `POST /uploads` con `purpose: avatar` y estar ya subido (HEAD en MinIO).
       requestBody:
         required: true
         content:
@@ -424,21 +473,33 @@ paths:
     post:
       tags: [contacts]
       operationId: createContact
-      summary: Agregar un contacto por teléfono
+      summary: Agregar un contacto por teléfono o desde una solicitud de mensaje
       description: |
-        Busca al usuario por teléfono E.164. Es **idempotente**: si el contacto ya existe responde
-        200 con el existente (no 409). Si el número no pertenece a un usuario activo, es el propio
-        usuario, o el destino lo ha bloqueado, responde el mismo **404** genérico. Así desaparecen
-        las respuestas 409/422 distintas que permitían enumerar teléfonos; el descubrimiento
-        restante queda acotado por el rate limit (30/hora, 200/día por usuario).
+        Exactamente uno de `phone` o `user_id` (si no, 422).
+        - `phone`: busca al usuario por teléfono E.164.
+        - `user_id`: agrega a alguien con quien **ya existe una conversación** (solicitud de
+          mensaje, `is_contact=false`) sin que el cliente necesite conocer su teléfono. Requiere la
+          función de BD `fn_crear_contacto_usuario` (pendiente del DBA): mientras no exista responde
+          **501**.
+
+        Es **idempotente**: si el contacto ya existe responde 200 con el existente (no 409). Si el
+        número no pertenece a un usuario activo, es el propio usuario, no hay relación (`user_id`) o
+        el destino lo ha bloqueado, responde el mismo **404** genérico. Así desaparecen las
+        respuestas 409/422 distintas que permitían enumerar teléfonos; el descubrimiento restante
+        queda acotado por el rate limit (30/hora, 200/día por usuario).
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/CreateContactRequest' }
-            example:
-              phone: '+50688880002'
-              alias: Beto
+            examples:
+              telefono:
+                value:
+                  phone: '+50688880002'
+                  alias: Beto
+              solicitud:
+                value:
+                  user_id: 0192d590-aaaa-4bbb-8ccc-ddddeeeeffff
       responses:
         '200':
           description: El contacto ya existía.
@@ -457,6 +518,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
 
   /contacts/{contactId}:
     parameters:
@@ -645,7 +707,10 @@ paths:
         Los elementos se devuelven **en orden cronológico ascendente**. `next_cursor` apunta a la
         siguiente página en la misma dirección. Los mensajes borrados aparecen como lápida
         (`deleted_at` con `text` y `media` nulos). Listar marca como **entregados** los mensajes
-        recibidos devueltos (equivale a `receipts` con `delivered`).
+        recibidos hasta el último de la página (equivale a `receipts` con `delivered`; la API lo
+        hace después de leer y publica `receipt.delivered`).
+        `next_cursor`: con `before` (o sin cursor) es el cursor del **primer** elemento; con
+        `after`, el del **último**; es `null` si llegaron menos de `limit` elementos.
       parameters:
         - $ref: '#/components/parameters/Limit'
         - name: before
@@ -676,8 +741,17 @@ paths:
         nunca del cliente. Tras confirmar la transacción se publica `message.new` en Redis para
         los canales de ambos participantes.
 
-        Idempotencia: si se repite `client_id` (o el encabezado `Idempotency-Key`) del mismo
-        emisor en las últimas 24 h se responde 200 con el mensaje original.
+        Requiere `text` y/o `media_id` (al menos uno; si faltan ambos, 422 con `field: text`).
+        `media_id` debe venir de `POST /uploads` con `purpose: message`, ya subido; la API comprueba
+        con un HEAD en MinIO que tamaño y tipo coinciden (si no, 422 `media_id`). Un adjunto solo se
+        puede usar en un mensaje.
+
+        Idempotencia: si se repite `client_id` (o el encabezado `Idempotency-Key`; si van ambos deben
+        coincidir) del mismo emisor se responde 200 con el mensaje original y no se vuelve a publicar.
+        La unicidad es permanente; reutilizarlo en otra conversación responde 409.
+
+        Responder implica haber leído: tras enviar, la API marca como `seen` todo lo recibido antes
+        en la conversación y publica `receipt.seen` al otro participante.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -709,6 +783,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Blocked' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
@@ -722,8 +797,9 @@ paths:
       description: |
         Marca como `delivered` o `seen` **todos** los mensajes recibidos de la conversación hasta
         `up_to_message_id` inclusive (marcador monótono: nunca retrocede). `seen` implica
-        `delivered`. Publica `receipt.delivered`/`receipt.seen` al emisor. También puede enviarse
-        `seen` por WebSocket; ambos caminos son equivalentes.
+        `delivered`. Publica `receipt.delivered`/`receipt.seen` al emisor solo si cambió algo.
+        También puede enviarse `seen` por WebSocket; ambos caminos son equivalentes.
+        `unread_count` tiene **tope 100** (el cliente muestra "99+").
       requestBody:
         required: true
         content:
@@ -741,6 +817,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /messages/{messageId}:
@@ -752,8 +829,9 @@ paths:
       summary: Editar un mensaje propio
       description: |
         Solo el autor y dentro de los 15 minutos posteriores al envío (fuera de plazo: 422
-        `edicion-expirada`). Un mensaje ajeno o de una conversación ajena responde 404. Publica
-        `message.edited`.
+        `edicion-expirada`). Un mensaje inexistente, borrado o de una conversación en la que no
+        participo responde **404**; si participo pero no soy el autor responde **403 `no-autor`**
+        (no filtra nada: ya veo ese mensaje). Con bloqueo, 403 `bloqueado`. Publica `message.edited`.
       requestBody:
         required: true
         content:
@@ -767,6 +845,7 @@ paths:
               schema: { $ref: '#/components/schemas/Message' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotAuthor' }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
@@ -776,10 +855,12 @@ paths:
       summary: Borrar un mensaje propio para todos
       description: |
         Solo el autor. Deja una lápida (`deleted_at`) y elimina contenido y adjunto. Idempotente
-        sobre un mensaje ya borrado (204). Publica `message.deleted`.
+        sobre un mensaje ya borrado (204, sin volver a publicar). No participante: 404; participante
+        no autor: 403 `no-autor`. Publica `message.deleted`.
       responses:
         '204': { description: 'Mensaje borrado.' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/NotAuthor' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
@@ -794,7 +875,9 @@ paths:
         directamente, sin pasar por PHP. El objeto queda `pending` hasta que se referencia por
         `media_id` en `PATCH /me` (avatar) o en un mensaje; la API comprueba en ese momento
         (HEAD al objeto) tamaño y tipo MIME reales. Los no referenciados en 24 h se eliminan.
-        Las descargas se sirven siempre con URL `GET` prefirmada de corta duración, nunca públicas.
+        Las descargas se sirven siempre con URL `GET` prefirmada de corta duración (10 min), nunca
+        públicas. `Content-Type` y `Content-Length` van **firmados**: el `PUT` debe enviar exactamente
+        los `headers` devueltos (MinIO rechaza con 403 cualquier otro valor). Firma AWS SigV4.
       requestBody:
         required: true
         content:
@@ -868,6 +951,12 @@ components:
       description: Access token JWT (15 min) obtenido en `/auth/login` o `/auth/refresh`.
 
   parameters:
+    RefreshCookieMode:
+      name: X-Refresh-Cookie
+      in: header
+      required: false
+      description: '`1` = el refresh viaja en la cookie HttpOnly `cr_refresh` en lugar del cuerpo (cliente web, A-15).'
+      schema: { type: string, enum: ['1'] }
     Cursor:
       name: cursor
       in: query
@@ -911,6 +1000,9 @@ components:
     NoStore:
       description: Las respuestas con tokens no se almacenan en caché.
       schema: { type: string, const: no-store }
+    RefreshCookie:
+      description: '`cr_refresh=<token>; Path=/api/v1/auth; Max-Age=<s>; HttpOnly; SameSite=Strict; Secure` (solo en modo cookie).'
+      schema: { type: string }
     RetryAfter:
       description: Segundos que el cliente debe esperar antes de reintentar.
       schema: { type: integer, minimum: 1 }
@@ -957,6 +1049,21 @@ components:
             title: Contraseña incorrecta
             status: 403
             detail: La contraseña actual no es correcta.
+    NotAuthor:
+      description: Participo en la conversación pero no soy el autor del mensaje (o hay un bloqueo).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://cr-chat.example/problemas/no-autor
+            title: Acción no permitida
+            status: 403
+            detail: Solo el autor puede modificar este mensaje.
+    NotImplemented:
+      description: Funcionalidad aún no disponible en este despliegue.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
     Blocked:
       description: La acción no está permitida por un bloqueo entre los usuarios.
       content:
@@ -1028,7 +1135,7 @@ components:
     Id:
       type: string
       format: uuid
-      description: Identificador público opaco (UUID v7).
+      description: Identificador público opaco (UUID; hoy v4, el cliente no debe asumir la versión).
       examples: [0192d5a0-6a1e-7c1a-9f3b-2d5e8c7a1b00]
 
     Problem:
@@ -1086,9 +1193,14 @@ components:
     LoginRequest:
       type: object
       additionalProperties: false
-      required: [email, password]
+      required: [identifier, password]
       properties:
-        email: { $ref: '#/components/schemas/Email' }
+        identifier:
+          type: string
+          minLength: 1
+          maxLength: 254
+          description: Email (si contiene `@`) o teléfono E.164 (`^\+[1-9][0-9]{7,14}$`). Otro formato -> 422.
+          examples: [ana@example.com, '+50688880001']
         password: { type: string, format: password, minLength: 1, maxLength: 128 }
         device_name:
           type: string
@@ -1102,12 +1214,12 @@ components:
         refresh_token: { type: string, minLength: 32, maxLength: 512 }
     TokenPair:
       type: object
-      required: [access_token, token_type, expires_in, refresh_token, refresh_expires_in, session_id, user]
+      required: [access_token, token_type, expires_in, refresh_expires_in, session_id, user]
       properties:
         access_token: { type: string, description: 'JWT de acceso.' }
         token_type: { type: string, const: Bearer }
         expires_in: { type: integer, description: 'Segundos de vida del access token.', examples: [900] }
-        refresh_token: { type: string, description: 'Token opaco de un solo uso.' }
+        refresh_token: { type: string, description: 'Token opaco de un solo uso (43 caracteres base64url). Ausente en modo cookie.' }
         refresh_expires_in: { type: integer, description: 'Segundos de vida del refresh (30 días, deslizante).', examples: [2592000] }
         session_id: { $ref: '#/components/schemas/Id' }
         user: { $ref: '#/components/schemas/Me' }
@@ -1225,9 +1337,12 @@ components:
     CreateContactRequest:
       type: object
       additionalProperties: false
-      required: [phone]
+      description: Exactamente uno de `phone` o `user_id` (regla validada por la API; si no, 422).
       properties:
         phone: { $ref: '#/components/schemas/Phone' }
+        user_id:
+          description: Usuario con el que ya comparto una conversación (solicitud de mensaje).
+          $ref: '#/components/schemas/Id'
         alias: { type: string, minLength: 1, maxLength: 50 }
     UpdateContactRequest:
       type: object
@@ -1261,7 +1376,7 @@ components:
 
     Conversation:
       type: object
-      required: [id, peer, is_contact, unread_count, last_message, created_at]
+      required: [id, peer, contact_alias, is_contact, unread_count, last_message, created_at]
       properties:
         id: { $ref: '#/components/schemas/Id' }
         peer: { $ref: '#/components/schemas/UserSummary' }
@@ -1270,9 +1385,13 @@ components:
           oneOf:
             - $ref: '#/components/schemas/Id'
             - type: 'null'
+        contact_alias:
+          type: [string, 'null']
+          maxLength: 50
+          description: Alias de mi contacto para el otro participante (null si no es contacto o no tiene alias; mostrar `peer.display_name`).
         is_contact: { type: boolean, description: 'false = solicitud de mensaje de alguien fuera de mis contactos.' }
         blocked: { type: boolean, description: 'true si yo bloqueé al otro participante.' }
-        unread_count: { type: integer, minimum: 0 }
+        unread_count: { type: integer, minimum: 0, maximum: 100, description: 'Mensajes no vistos, con tope 100 (mostrar "99+").' }
         last_message:
           oneOf:
             - $ref: '#/components/schemas/Message'
@@ -1332,12 +1451,13 @@ components:
     SendMessageRequest:
       type: object
       additionalProperties: false
-      anyOf:
-        - required: [text]
-        - required: [media_id]
+      description: |
+        `text` y `media_id` son opcionales, pero **al menos uno** es obligatorio (regla validada por
+        la API: si faltan ambos, 422 con `field: text`). Sin `anyOf` para que los generadores de
+        tipos (openapi-typescript) produzcan un objeto útil.
       properties:
         client_id: { $ref: '#/components/schemas/Id' }
-        text: { type: string, minLength: 1, maxLength: 4000 }
+        text: { type: string, minLength: 1, maxLength: 4000, description: 'Texto (NFC; admite saltos de línea y tabuladores).' }
         media_id: { $ref: '#/components/schemas/Id' }
     EditMessageRequest:
       type: object
@@ -1368,7 +1488,7 @@ components:
         status: { type: string, enum: [delivered, seen] }
         up_to_message_id: { $ref: '#/components/schemas/Id' }
         updated_count: { type: integer, minimum: 0 }
-        unread_count: { type: integer, minimum: 0 }
+        unread_count: { type: integer, minimum: 0, maximum: 100, description: 'Tope 100 ("99+").' }
 
     UploadRequest:
       type: object

@@ -1,0 +1,11 @@
+# Contexto de build de datos/Dockerfile (BuildKit usa este archivo junto al Dockerfile)
+.git
+**/vendor
+**/node_modules
+**/.env
+**/postgreData
+**/mysqlData
+**/backup
+**/logs
+presentacion
+.claude
