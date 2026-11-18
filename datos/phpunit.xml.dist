@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         failOnWarning="true"
+         failOnRisky="true"
+         failOnDeprecation="true">
+    <testsuites>
+        <testsuite name="unit">
+            <directory>tests/unit</directory>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <directory>src</directory>
+        </include>
+    </source>
+    <php>
+        <!-- Valores ficticios solo para las pruebas unitarias (no son secretos reales) -->
+        <env name="APP_ENV" value="test" force="true"/>
+        <env name="JWT_ACCESS_KEY" value="clave-de-prueba-unitaria-de-al-menos-32-bytes" force="true"/>
+        <env name="MSG_ENC_KEY" value="AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=" force="true"/>
+        <env name="MSG_ENC_KEY_ID" value="2" force="true"/>
+        <env name="MSG_ENC_KEYS_OLD" value="1:ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=" force="true"/>
+        <env name="CORS_ORIGINS" value="http://localhost:5173,http://localhost:4200" force="true"/>
+        <env name="MINIO_ACCESS_KEY" value="AKIAIOSFODNN7EXAMPLE" force="true"/>
+        <env name="MINIO_SECRET_KEY" value="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" force="true"/>
+    </php>
+</phpunit>

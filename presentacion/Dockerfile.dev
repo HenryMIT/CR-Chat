@@ -1,0 +1,21 @@
+# Contenedor de DESARROLLO del frontend de CR_Chat (Vite con HMR).
+# No es una imagen de producción: sirve el código montado desde el host.
+FROM node:24-alpine
+
+WORKDIR /app
+
+# Se trabaja con el usuario sin privilegios de la imagen (uid 1000).
+# /app/node_modules se crea aquí para que el volumen con nombre herede su dueño.
+RUN mkdir -p /app/node_modules && chown -R node:node /app
+USER node
+
+# Dependencias primero para aprovechar la caché de capas; sin dejar caché de npm.
+COPY --chown=node:node package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund && npm cache clean --force
+
+COPY --chown=node:node . .
+
+EXPOSE 5173
+
+# --host 0.0.0.0 para que el servidor sea accesible desde fuera del contenedor.
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

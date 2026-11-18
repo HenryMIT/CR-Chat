@@ -28,3 +28,4 @@ Thumbs.db
 # Credenciales locales de clientes de BD
 **/.pgpass
 **/.my.cnf
+.claude/worktrees/

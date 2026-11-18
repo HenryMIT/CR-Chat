@@ -1,15 +1,49 @@
 {
+    "name": "cr-chat/datos",
+    "description": "API REST v1 y servidor WebSocket de CR_Chat (Slim 4 + Workerman).",
+    "type": "project",
+    "license": "MIT",
     "require": {
-        "php": "^8.4",
+        "php": "^8.4.27",
+        "ext-curl": "*",
+        "ext-intl": "*",
+        "ext-json": "*",
+        "ext-mbstring": "*",
+        "ext-pdo": "*",
+        "ext-pdo_pgsql": "*",
+        "ext-redis": "*",
+        "ext-sodium": "*",
         "slim/slim": "^4.15",
         "slim/psr7": "^1.8",
         "php-di/php-di": "^7.1",
-        "firebase/php-jwt": "^7.2",
-        "vlucas/phpdotenv": "^5.6"
+        "firebase/php-jwt": "^7.0",
+        "vlucas/phpdotenv": "^5.6",
+        "workerman/workerman": "^5.1",
+        "giggsey/libphonenumber-for-php-lite": "^9.0",
+        "ext-pcntl": "*",
+        "ext-posix": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^12.0"
     },
     "autoload": {
         "psr-4": {
             "App\\": "src/"
         }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "App\\Tests\\": "tests/unit/"
+        }
+    },
+    "config": {
+        "platform": {
+            "php": "8.4.27"
+        },
+        "sort-packages": true,
+        "optimize-autoloader": true
+    },
+    "scripts": {
+        "test": "phpunit"
     }
 }

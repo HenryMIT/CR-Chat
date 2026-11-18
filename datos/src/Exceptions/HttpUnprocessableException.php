@@ -2,12 +2,12 @@
 
 namespace App\Exceptions;
 
-use Slim\Exception\HttpSpecializedException;
-
-class HttpUnprocessableException extends HttpSpecializedException
+// 422 con la lista de campos inválidos en `errors[]` ({field, detail}).
+class HttpUnprocessableException extends ProblemException
 {
     protected $code = 422;
-    protected $message = 'Unprocessable Content.';
-    protected string $title = '422 Unprocessable Content';
-    protected string $description = 'The request was well-formed but could not be processed.';
+    protected $message = 'Uno o más campos no son válidos.';
+    protected string $title = 'Datos inválidos';
+    protected string $description = 'La petición está bien formada pero sus datos no son válidos.';
+    protected string $problemType = 'validacion';
 }
