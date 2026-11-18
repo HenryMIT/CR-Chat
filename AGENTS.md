@@ -1,6 +1,6 @@
 # AGENTS.md — CR_Chat
 
-App de mensajería 1:1 (proyecto de portafolio Backend/Full-Stack) con foco en seguridad, alta disponibilidad de datos y tiempo real. Rama de trabajo: `feat/multiagente`.
+App de mensajería 1:1 (proyecto de portafolio Backend/Full-Stack) con foco en seguridad, alta disponibilidad de datos y tiempo real. Rama principal: `main` (remoto `origin` en GitHub); el trabajo nuevo va en ramas `feat/*`.
 
 ## Stack y estructura
 - `datos/`: API REST `/api/v1` (PHP 8.4, Slim 4, PHP-DI) en `:8000` y WebSocket Workerman (`datos/ws/`) en `:8080`; Redis pub/sub.
