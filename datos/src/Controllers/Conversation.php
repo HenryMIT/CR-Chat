@@ -22,7 +22,7 @@ class Conversation extends BaseController
         ], true);
         $last = end($rows);
         return $this->json($response, [
-            'items' => array_map(fn($r) => $this->present($me, $r, true), $rows),
+            'items' => array_map([$this->presenter(), 'conversation'], $rows),
             'next_cursor' => count($rows) === $limit ? Cursor::pair($last['ultimo_mensaje_at'], $last['id']) : null,
         ]);
     }
@@ -36,7 +36,7 @@ class Conversation extends BaseController
         }
         $me = $this->userId($request);
         $row = $this->callOne('crear_conversacion', ['p_usuario' => $me, 'p_contacto' => strtolower($body['contact_id'])]);
-        $conversation = $this->present($me, $row, false);
+        $conversation = $this->presenter()->conversation($row);
 
         if (!$row['creada']) {
             return $this->json($response, $conversation);
@@ -62,20 +62,7 @@ class Conversation extends BaseController
         $id = $this->uuidArg($request, $args, 'conversationId', 'Conversación');
         $me = $this->userId($request);
         $row = $this->callOne('obtener_conversacion', ['p_usuario' => $me, 'p_conversacion' => $id], true);
-        return $this->json($response, $this->present($me, $row, true));
+        return $this->json($response, $this->presenter()->conversation($row));
     }
 
-    /**
-     * contact_alias: alias de mi contacto para el otro participante. Si la BD aún no lo devuelve
-     * en las columnas de la conversación (pedido al DBA), se obtiene con fn_obtener_contacto.
-     */
-    private function present(string $me, array $row, bool $readOnly): array
-    {
-        $alias = null;
-        if (!array_key_exists('contacto_alias', $row) && $row['id_contacto'] !== null) {
-            $contact = $this->callOne('obtener_contacto', ['p_usuario' => $me, 'p_contacto' => $row['id_contacto']], $readOnly);
-            $alias = $contact['alias'] ?? null;
-        }
-        return $this->presenter()->conversation($row, $alias);
-    }
 }

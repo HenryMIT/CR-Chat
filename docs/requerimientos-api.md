@@ -221,7 +221,8 @@ Todas reciben el id del usuario autenticado y validan propiedad/participación d
   `aws/aws-sdk-php` (decenas de MB y Guzzle para cuatro operaciones). `bucket`/`clave_objeto` nunca salen
   al cliente. Job de huérfanos cada hora en el proceso `cr-chat-tareas` del servicio `ws`.
 - **Swagger UI**: `swagger-ui-dist` 5.34.1 copiado en la imagen (etapa Node del Dockerfile), sin CDN.
-- **`contact_alias`** (Conversation): mientras `fn__conversaciones` no devuelva el alias, la API lo
-  obtiene con `fn_obtener_contacto` por conversación (pedido al DBA: columna `contacto_alias`).
-- **`POST /contacts {user_id}`**: necesita `fn_crear_contacto_usuario` en la BD; hasta entonces 501.
+- **`contact_alias`** (Conversation): sale de la columna `contacto_alias` de `fn__conversaciones`
+  (crear/obtener/listar conversaciones); la API ya no consulta `fn_obtener_contacto` por conversación.
+- **`POST /contacts {user_id}`**: implementado con `fn_crear_contacto_usuario` (exige relación previa y
+  sin bloqueo; inexistente/uno mismo/sin relación/bloqueo → el mismo 404).
 - **Pendiente (S)**: validación automática de las respuestas contra `openapi.yaml` (G-09).

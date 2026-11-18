@@ -459,7 +459,10 @@ paths:
         - $ref: '#/components/parameters/Limit'
         - name: q
           in: query
-          description: Texto de búsqueda (alias, nombre o teléfono).
+          description: |
+            Texto de búsqueda. Alias y nombre: sin distinguir mayúsculas ni acentos. Teléfono: por
+            **prefijo E.164** sin separadores (p. ej. `+5067000`); el cliente debe normalizar lo que
+            escribe el usuario.
           schema: { type: string, minLength: 1, maxLength: 50 }
       responses:
         '200':
@@ -477,14 +480,13 @@ paths:
       description: |
         Exactamente uno de `phone` o `user_id` (si no, 422).
         - `phone`: busca al usuario por teléfono E.164.
-        - `user_id`: agrega a alguien con quien **ya existe una conversación** (solicitud de
-          mensaje, `is_contact=false`) sin que el cliente necesite conocer su teléfono. Requiere la
-          función de BD `fn_crear_contacto_usuario` (pendiente del DBA): mientras no exista responde
-          **501**.
+        - `user_id`: agrega a alguien con quien **ya existe relación** (conversación compartida,
+          p. ej. una solicitud de mensaje con `is_contact=false`, o que ya te tiene en su agenda) sin
+          que el cliente necesite conocer su teléfono. No debe haber bloqueo en ningún sentido.
 
         Es **idempotente**: si el contacto ya existe responde 200 con el existente (no 409). Si el
         número no pertenece a un usuario activo, es el propio usuario, no hay relación (`user_id`) o
-        el destino lo ha bloqueado, responde el mismo **404** genérico. Así desaparecen las
+        hay bloqueo (con `phone`, si el destino te bloqueó; con `user_id`, en cualquier sentido), responde el mismo **404** genérico. Así desaparecen las
         respuestas 409/422 distintas que permitían enumerar teléfonos; el descubrimiento restante
         queda acotado por el rate limit (30/hora, 200/día por usuario).
       requestBody:
@@ -518,7 +520,6 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
 
   /contacts/{contactId}:
     parameters:
@@ -1059,11 +1060,6 @@ components:
             title: Acción no permitida
             status: 403
             detail: Solo el autor puede modificar este mensaje.
-    NotImplemented:
-      description: Funcionalidad aún no disponible en este despliegue.
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
     Blocked:
       description: La acción no está permitida por un bloqueo entre los usuarios.
       content:

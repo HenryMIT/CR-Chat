@@ -284,8 +284,14 @@ check("B ve el avatar de A en la conversación", 200, call("GET", f"/conversatio
 check("quitar avatar", 200, call("PATCH", "/me", {"avatar_media_id": None}, token=ta), lambda p, h: p["avatar"] is None)
 
 print("== Contacto desde solicitud de mensaje (user_id)")
-check("B agrega a A por user_id (201, o 501 si falta fn_crear_contacto_usuario)", (201, 501), call("POST", "/contacts", {"user_id": id_a}, token=tb))
-check("C agrega por user_id sin relación -> 404 (o 501)", (404, 501), call("POST", "/contacts", {"user_id": id_a}, token=tc))
+check("B agrega a A por user_id (tiene conversación) -> 201", 201, call("POST", "/contacts", {"user_id": id_a, "alias": "Anita"}, token=tb),
+      lambda p, h: p["user"]["id"] == id_a and p["alias"] == "Anita" and h.get("Location", "").endswith(p["id"]))
+check("B repite por user_id -> 200 (idempotente)", 200, call("POST", "/contacts", {"user_id": id_a}, token=tb), lambda p, h: p["alias"] == "Anita")
+check("B ve la conversación con contact_alias", 200, call("GET", f"/conversations/{conv}", token=tb),
+      lambda p, h: p["is_contact"] is True and p["contact_alias"] == "Anita")
+check("C agrega por user_id sin relación -> 404", 404, call("POST", "/contacts", {"user_id": id_a}, token=tc))
+check("user_id inexistente -> 404", 404, call("POST", "/contacts", {"user_id": "0192d590-aaaa-4bbb-8ccc-ddddeeeeffff"}, token=tb))
+check("user_id propio -> 404", 404, call("POST", "/contacts", {"user_id": id_b}, token=tb))
 
 print("== Sesiones")
 la2 = check("A inicia segunda sesión", 200, login(A["phone"], A["password"]))

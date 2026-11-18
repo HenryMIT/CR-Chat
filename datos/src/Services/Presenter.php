@@ -105,8 +105,8 @@ class Presenter
         ];
     }
 
-    /** $alias: alias de mi contacto para el otro participante (contact_alias), si se conoce. */
-    public function conversation(array $r, ?string $alias = null): array
+    /** contact_alias = contacto_alias de fn__conversaciones: alias que yo le puse al otro (NULL si no hay). */
+    public function conversation(array $r): array
     {
         $last = null;
         if ($r['ult_id'] !== null) {
@@ -129,7 +129,7 @@ class Presenter
             'id' => $r['id'],
             'peer' => $this->userSummary($r['id_peer'], $r['peer_nombre'], $r['peer_avatar']),
             'contact_id' => $r['id_contacto'],
-            'contact_alias' => $r['contacto_alias'] ?? $alias,
+            'contact_alias' => $r['contacto_alias'],
             'is_contact' => (bool) $r['es_contacto'],
             'blocked' => (bool) $r['bloqueado'],
             'unread_count' => (int) $r['no_leidos'],

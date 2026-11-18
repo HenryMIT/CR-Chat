@@ -1,12 +1,10 @@
 <?php
 namespace App\Controllers;
 
-use App\Exceptions\HttpProblemException;
 use App\Support\Cursor;
 use App\Support\Phone;
 use App\Support\Text;
 use App\Support\Uuid;
-use PDOException;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Slim\Exception\HttpBadRequestException;
@@ -114,21 +112,13 @@ class Contact extends BaseController
     }
 
     /**
-     * Agregar desde una solicitud de mensaje sin conocer el teléfono (U-06). Requiere la función
-     * de BD fn_crear_contacto_usuario (pedida al DBA); mientras no exista responde 501.
+     * Agregar desde una solicitud de mensaje sin conocer el teléfono (U-06). La BD exige relación
+     * previa y sin bloqueo; si no, CR404 (mismo 404 que un uuid inexistente: anti-enumeración).
      */
     private function createFromUser(Request $request, string $target, ?string $alias): array
     {
-        try {
-            return $this->callOne('crear_contacto_usuario', [
-                'p_usuario' => $this->userId($request), 'p_objetivo' => $target, 'p_alias' => $alias,
-            ]);
-        } catch (PDOException $e) {
-            if (($e->errorInfo[0] ?? '') === '42883') {
-                throw new HttpProblemException($request, 501, 'no-implementado', 'No implementado',
-                    'Agregar un contacto por user_id aún no está disponible; usa phone.');
-            }
-            throw $e;
-        }
+        return $this->callOne('crear_contacto_usuario', [
+            'p_usuario' => $this->userId($request), 'p_objetivo' => $target, 'p_alias' => $alias,
+        ]);
     }
 }
