@@ -124,18 +124,23 @@ function PanelConversacion({ conversacion }: { conversacion: Conversacion }) {
     }
     return undefined
   }, [mensajes, miId])
-  const inicialDelPar = useRef<string | undefined>(undefined)
+  // Último mensaje del par en la primera carga (null = no había ninguno). Se fija al cargar
+  // y no al llegar el primero del par: si no, el primer mensaje recibido en un chat sin
+  // mensajes suyos se tomaría como «ya visto» y nunca se enviaría el recibo.
+  const inicialDelPar = useRef<string | null | undefined>(undefined)
   const vistoEnviado = useRef<string | null>(null)
   const noLeidos = conversacion.unread_count
+  const cargado = consulta.data !== undefined
   useEffect(() => {
+    if (!cargado) return
+    if (inicialDelPar.current === undefined) inicialDelPar.current = ultimoDelPar?.id ?? null
     if (!ultimoDelPar) return
-    inicialDelPar.current ??= ultimoDelPar.id
     if (!visible || vistoEnviado.current === ultimoDelPar.id) return
     if (noLeidos > 0 || ultimoDelPar.id !== inicialDelPar.current) {
       vistoEnviado.current = ultimoDelPar.id
       marcarVisto(ultimoDelPar.id)
     }
-  }, [ultimoDelPar, visible, noLeidos, marcarVisto])
+  }, [cargado, ultimoDelPar, visible, noLeidos, marcarVisto])
 
   const cargarMas = useCallback(() => {
     if (consulta.hasNextPage && !consulta.isFetchingNextPage) void consulta.fetchNextPage()

@@ -2,11 +2,12 @@ import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-q
 import { api, ok } from '@/api/cliente'
 import { claves } from '@/api/claves'
 import type { Contacto } from '@/api/tipos'
+import { consultaContactos } from '@/lib/formato'
 
 const TAMANO_PAGINA = 30
 
 export function useContactos(q: string) {
-  const busqueda = q.trim()
+  const busqueda = consultaContactos(q)
   return useInfiniteQuery({
     queryKey: claves.contactos(busqueda),
     queryFn: ({ pageParam, signal }) =>

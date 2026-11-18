@@ -90,6 +90,21 @@ export function normalizarTelefono(entrada: string): string {
   return t
 }
 
+/**
+ * Prepara el texto de búsqueda de contactos: la API busca teléfonos por prefijo E.164
+ * (`+50670…`), así que si parece un teléfono se quitan separadores y, si no trae código de
+ * país (≤ 8 dígitos), se asume +506. Lo que escribe la persona se ve como «7000 0003».
+ * Si no parece un teléfono (nombre o alias) se devuelve tal cual, recortado.
+ */
+export function consultaContactos(entrada: string): string {
+  const t = entrada.trim()
+  if (!/^\+?[0-9][0-9\s\-().]*$/.test(t)) return t
+  const digitos = t.replace(/[\s\-().]/g, '')
+  if (digitos.startsWith('+')) return digitos
+  if (digitos.length <= 8) return `+506${digitos}`
+  return `+${digitos}`
+}
+
 export function esTelefonoE164(telefono: string): boolean {
   return E164.test(telefono)
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { iniciarSesion } from '@/auth/sesion'
+import { servidor } from '@/test/servidor'
 import { entrarComoAna, renderApp } from '@/test/utilidades'
 
 describe('contactos', () => {
@@ -17,6 +18,26 @@ describe('contactos', () => {
       expect(within(region).queryByText('Bruno')).not.toBeInTheDocument()
     })
     expect(within(region).getByText('Carla (trabajo)')).toBeInTheDocument()
+  })
+
+  it('busca por teléfono tal como se muestra (local, con espacios) enviando el prefijo E.164', async () => {
+    await entrarComoAna()
+    const u = userEvent.setup()
+    const consultas: string[] = []
+    servidor.events.on('request:start', ({ request }) => {
+      const q = new URL(request.url).searchParams.get('q')
+      if (request.url.includes('/contacts') && q) consultas.push(q)
+    })
+    renderApp('/contactos')
+    const region = await screen.findByRole('region', { name: 'Tus contactos' })
+    await within(region).findByText('Bruno')
+    await u.type(screen.getByRole('searchbox', { name: /Buscar/ }), '7000 0003')
+    await waitFor(() => {
+      expect(within(region).queryByText('Bruno')).not.toBeInTheDocument()
+    })
+    expect(within(region).getByText('Carla (trabajo)')).toBeInTheDocument()
+    expect(consultas.at(-1)).toBe('+50670000003')
+    servidor.events.removeAllListeners()
   })
 
   it('agrega por teléfono local y muestra 404 genérico si el número no existe', async () => {

@@ -18,6 +18,16 @@ import {
 } from './sesion'
 
 describe('sesión', () => {
+  it('normaliza un teléfono local a E.164 antes de enviarlo (la API exige E.164)', async () => {
+    let cuerpo: Record<string, unknown> = {}
+    servidor.events.on('request:start', ({ request }) => {
+      if (request.url.endsWith('/auth/login')) void request.clone().json().then((b) => (cuerpo = b as Record<string, unknown>))
+    })
+    await expect(iniciarSesion(' 7000 0001 ', 'Demo-Ana-2026!')).resolves.toMatchObject({ display_name: 'Ana Demo' })
+    expect(cuerpo.identifier).toBe('+50670000001')
+    servidor.events.removeAllListeners()
+  })
+
   it('inicia sesión con teléfono en `identifier` y guarda el access solo en memoria', async () => {
     let cuerpo: Record<string, unknown> = {}
     servidor.events.on('request:start', ({ request }) => {

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { delay, http, HttpResponse } from 'msw'
 import { IDS } from '@/mocks/db'
-import { API, servidor } from '@/test/servidor'
+import { API, conexionesWs, db, servidor } from '@/test/servidor'
 import { entrarComoAna, renderApp } from '@/test/utilidades'
 
 describe('lista de conversaciones', () => {
@@ -109,6 +109,27 @@ describe('conversación', () => {
     await u.click(within(dialogo).getByRole('button', { name: 'Eliminar' }))
     expect(await screen.findByText('Mensaje eliminado')).toBeInTheDocument()
     expect(screen.queryByText('Texto corregido')).not.toBeInTheDocument()
+  })
+
+  it('marca visto el primer mensaje del par en un chat que no tenía mensajes suyos', async () => {
+    // Chat vacío (como el seed real): el primer mensaje recibido no debe tomarse como «ya visto».
+    db.d.mensajes = db.d.mensajes.filter((m) => m.conversation_id !== IDS.convAnaBruno)
+    db.d.marcadores = {}
+    await entrarComoAna()
+    renderApp(`/chats/${IDS.convAnaBruno}`)
+    await screen.findByRole('heading', { name: /Di hola/ })
+    await waitFor(() => {
+      expect(conexionesWs.size).toBeGreaterThan(0)
+    })
+    await act(async () => {
+      await delay(50)
+      db.enviarMensaje(IDS.bruno, IDS.convAnaBruno, { text: 'Primer mensaje de Bruno' })
+    })
+    await screen.findByText('Primer mensaje de Bruno')
+    const primero = db.d.mensajes.find((m) => m.text === 'Primer mensaje de Bruno')
+    await waitFor(() => {
+      expect(db.d.marcadores[`${IDS.convAnaBruno}:${IDS.ana}`]?.seen).toBe(primero?.id)
+    })
   })
 
   it('en una solicitud de mensaje (no es contacto) ofrece agregar o bloquear', async () => {

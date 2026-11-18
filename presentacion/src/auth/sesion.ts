@@ -12,6 +12,7 @@
  */
 import { create } from 'zustand'
 import { env } from '@/lib/env'
+import { normalizarTelefono, pareceCorreo } from '@/lib/formato'
 import { ErrorDeRed, errorDesdeRespuesta } from '@/api/errores'
 import type { LoginPeticion, Me, ParTokens } from '@/api/tipos'
 
@@ -215,7 +216,9 @@ export async function arrancarSesion(): Promise<void> {
 }
 
 export async function iniciarSesion(identifier: string, password: string): Promise<Me> {
-  const cuerpo: LoginPeticion = { identifier: identifier.trim(), password, device_name: nombreDispositivo() }
+  // La API exige email o teléfono E.164: «7000 0001» se envía como +50670000001.
+  const id = identifier.trim()
+  const cuerpo: LoginPeticion = { identifier: pareceCorreo(id) ? id : normalizarTelefono(id), password, device_name: nombreDispositivo() }
   const res = await postJson('/auth/login', cuerpo)
   if (!res.ok) throw errorDesdeRespuesta(res, await res.json().catch(() => undefined))
   const par = (await res.json()) as ParTokens

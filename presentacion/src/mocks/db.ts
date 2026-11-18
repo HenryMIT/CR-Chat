@@ -399,11 +399,9 @@ export class MockDb {
 
   /** Login por teléfono o correo (`identifier`); acepta también `email` del contrato actual. */
   login(identificador: string, password: string, dispositivo: string | undefined) {
+    // Como la API real: email o teléfono ya en E.164 (el cliente normaliza antes de enviar).
     const id = identificador.trim()
-    const telefono = id.replace(/[\s\-().]/g, '')
-    const u = this.d.usuarios.find((x) =>
-      id.includes('@') ? x.email.toLowerCase() === id.toLowerCase() : x.phone === telefono || x.phone === `+506${telefono}`,
-    )
+    const u = this.d.usuarios.find((x) => (id.includes('@') ? x.email.toLowerCase() === id.toLowerCase() : x.phone === id))
     if (u?.password !== password) {
       throw new ErrorMock(401, 'no-autenticado', 'No autenticado', 'Credenciales incorrectas.')
     }
@@ -597,7 +595,8 @@ export class MockDb {
       .filter((c) => {
         if (!consulta) return true
         const nombre = sinAcentos(`${c.alias ?? ''} ${c.user.display_name}`)
-        return nombre.includes(consulta) || c.phone.replace('+', '').startsWith(consulta.replace(/[\s+]/g, ''))
+        // Como fn_listar_contactos: prefijo E.164 con o sin '+', sin quitar espacios.
+        return nombre.includes(consulta) || c.phone.startsWith(`+${consulta.replace(/^\++/, '')}`)
       })
       .sort((a, b) => {
         const na = sinAcentos(a.alias ?? a.user.display_name)
